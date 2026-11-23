@@ -122,7 +122,7 @@ Fixed inside SAELens 6.56 and therefore different from `shizuku`: the auxiliary 
 
 muscari changes one thing: the decoder bias starts at the geometric median of the first batch, as in the `shizuku` trainer, where SAELens starts it at zero. Encoder hidden states can share a large common component. With a zero bias the top-k selection then locks onto the few latents aligned with that component; a regression test reproduces this on synthetic activations, where one latent fires on every token and the reconstruction is worse than predicting the mean. `--zero-b-dec` restores SAELens' own initialisation.
 
-A short run is not enough to judge this backend. With SAELens' default decoder scale, most latents go unused early in training and its auxiliary loss brings them back over time. This was seen on synthetic activations and has not been measured on a real encoder.
+A short run is not enough to judge this backend. With SAELens' default decoder scale, most latents go unused early in training and its auxiliary loss brings them back over time. This was seen on synthetic activations. The [trial on a real encoder](#trial-on-a-real-encoder) is consistent with it but does not isolate it.
 
 ### 7. Export format (`muscari.export`)
 
@@ -167,7 +167,7 @@ The model card of the SAE used by Shizuku states: 65,536 latents, `k = 16`, AuxK
 
 ## Trial on a real encoder
 
-One short run per trainer on an Apple M5 Pro with MPS, to check that the pipeline works with a real model, tokenizer and dataset. It is not a statement about SAE quality: the budget is 0.5% of the recipe's one billion tokens, there is one seed, and no reference value exists to compare with.
+Three short runs on an Apple M5 Pro with MPS, to check that the pipeline works with a real model, tokenizer and dataset. It is not a statement about SAE quality: the budget is 0.5% of the recipe's one billion tokens, there is one seed, and no reference value exists to compare with.
 
 | Setting | Value |
 | --- | --- |
@@ -175,23 +175,30 @@ One short run per trainer on an Apple M5 Pro with MPS, to check that the pipelin
 | Data | subset `jsquad` of `cl-nagoya/ruri-v3-dataset-ft`; columns `anc` with `検索クエリ: `, `pos` and `neg` with `検索文書: ` |
 | SAE | 8,192 latents, `k = 16` |
 | Budget | 5 million tokens (610 steps of 8,192), dead after 1 million tokens, 5% of the texts held out |
+| Seed | 0, the default at the time |
 
-| | `shizuku` | `saelens` (`topk`, zero decoder bias) |
-| --- | ---: | ---: |
-| FVU on 200,000 held-out tokens | 0.441 | 0.511 |
-| Active latents per token | 16 | 16 |
-| Latents that never fired | 0% | 91.5% |
-| Latents firing on more than 10% of tokens | 0% | 0.4% |
-| Largest firing share of one latent | 6.3% | 23.7% |
-| Wall time, with downloads and evaluation | 200 s | 189 s |
+| | `shizuku` | `saelens` `topk`, zero decoder bias | `saelens` `topk`, median decoder bias |
+| --- | ---: | ---: | ---: |
+| FVU on 200,000 held-out tokens | 0.441 | 0.511 | 0.467 |
+| Active latents per token | 16 | 16 | 16 |
+| Latents that never fired | 0% | 91.5% | 54.1% |
+| Latents firing on more than 10% of tokens | 0% | 0.4% | 0% |
+| Largest firing share of one latent | 6.3% | 23.7% | 7.4% |
+| Wall time, with evaluation | 200 s | 189 s | 193 s |
 
-Evaluated on 200,000 tokens of the `jaquad` subset, which was not used for training, the `shizuku` SAE had an FVU of 0.447, no latent that never fired, and one latent above 10% (10.1%). The run encoded 31,616 distinct texts, 5.52 million content tokens, at about 42,000 tokens per second including the encoder.
+The first run includes the download of the model and the dataset subset. Evaluated on 200,000 tokens of the `jaquad` subset, which was not used for training, the `shizuku` SAE had an FVU of 0.447, no latent that never fired, and one latent above 10% (10.1%). Each run encoded 31,616 distinct texts, 5.52 million content tokens; the `shizuku` run did so at about 42,000 tokens per second including the encoder.
 
-What this run does not show:
+What the runs show beyond "it works":
+
+- **The prefix rule does what it should with this tokenizer.** It is a fast tokenizer. `検索クエリ: ` becomes the four tokens `検索`, `クエリ`, `:` and `▁`; all of them end inside the prefix and are dropped, and every token of the text is kept. This was checked by hand on three texts, with and without a prefix.
+- **These hidden states have a large common component.** Over 100,000 activations, the mean activation has a norm of 35.0, as large as the average distance of an activation from it (35.3); it carries half of the squared norm.
+- **The decoder bias matters for the SAELens backend.** Starting it at the geometric median instead of zero lowered the latents that never fired from 91.5% to 54.1% and the FVU from 0.511 to 0.467.
+
+What they do not show:
 
 - The log of the `shizuku` run shows no dead latent and a zero auxiliary loss at every logged step, so AuxK was not exercised on real activations.
-- The SAELens run was made before muscari initialised its decoder bias and has not been repeated since. Its unused latents may come from the zero bias, from the short budget, or both; see the notes on the SAELens backend above.
-- The two columns differ in auxiliary loss, dead-latent bookkeeping, decoder scaling and initialisation. They are not a like-for-like comparison of the trainers.
+- Why half of the SAELens latents still never fired. The short budget is a candidate, as described for the SAELens backend above, but a longer run was not made.
+- A like-for-like comparison of the trainers. The columns differ in auxiliary loss, dead-latent bookkeeping, decoder scaling and initialisation.
 
 ## What is verified
 
@@ -202,6 +209,7 @@ What this run does not show:
 - Holdout split: disjoint, deterministic, independent of prefix and row.
 
 - Apple MPS: losses, gradients and activations agree with the CPU, and the trial above ran end to end.
+- Prefix exclusion with the ruri-v3 tokenizer: by hand, on three texts.
 
 Except for the trial above, all of this uses a randomly initialised two-layer BERT or synthetic activations. See the [validation status](../README.md#validation-status) for the environments that ran.
 
@@ -209,7 +217,7 @@ Except for the trial above, all of this uses a randomly initialised two-layer BE
 
 - SAE quality on a real encoder: reconstruction, dead and dense latents at 65,536 latents and one billion tokens.
 - That an SAE trained here improves retrieval when used as a sparse vocabulary.
-- AuxK and the SAELens backend with the new bias initialisation on real activations.
+- AuxK on real activations.
 - CUDA, including bfloat16 autocast on CUDA. The autocast code path is exercised on CPU only.
 
 ## Research background
