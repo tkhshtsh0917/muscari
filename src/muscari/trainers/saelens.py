@@ -13,11 +13,17 @@ Differences from ``ShizukuTrainer`` that are fixed inside SAELens (checked again
   as a JumpReLU SAE with one threshold per latent, so the number of active latents varies from
   token to token.
 
+One thing is changed on purpose: the decoder bias starts at the geometric median of the first
+batch instead of zero. Encoder hidden states can have a large common component; with a zero
+bias the top-k selection then locks onto the few latents aligned with it. Pass
+``init_b_dec=False`` for SAELens' own initialisation.
+
 Requires the ``saelens`` extra: ``pip install "muscari[saelens]"``.
 """
 
 from __future__ import annotations
 
+import itertools
 import tempfile
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
@@ -28,6 +34,7 @@ import torch
 
 from ..devices import resolve_device
 from ..export import save_saelens_sae
+from ..sae import geometric_median
 
 ARCHITECTURES = ("topk", "batchtopk")
 
@@ -50,6 +57,8 @@ class SAELensTrainerConfig:
         total_tokens: training length in tokens.
         batch_tokens: activations per optimisation step.
         amp: let SAELens run under autocast.
+        init_b_dec: start the decoder bias at the geometric median of the first batch, as the
+            ``shizuku`` trainer does. SAELens itself starts it at zero.
         log_to_wandb: send SAELens' metrics to Weights & Biases.
         wandb_project: project name used when logging is on.
         device: ``"auto"`` or a device string.
@@ -67,6 +76,7 @@ class SAELensTrainerConfig:
     total_tokens: int = 1_000_000_000
     batch_tokens: int = 8192
     amp: bool = False
+    init_b_dec: bool = True
     log_to_wandb: bool = False
     wandb_project: str = "muscari"
     device: str = "auto"
@@ -134,6 +144,13 @@ def train_with_saelens(
     )
     sae = TrainingSAE.from_dict(sae_config.to_dict())
 
+    stream = iter(batches)
+    if cfg.init_b_dec:
+        first = next(stream)
+        with torch.no_grad():
+            sae.b_dec.copy_(geometric_median(first[:32_768]).to(sae.b_dec))
+        stream = itertools.chain([first], stream)
+
     trainer_config = SAETrainerConfig(
         total_training_samples=cfg.total_steps * cfg.batch_tokens,
         train_batch_size_samples=cfg.batch_tokens,
@@ -158,7 +175,7 @@ def train_with_saelens(
     trainer = SAETrainer(
         cfg=trainer_config,
         sae=sae,
-        data_provider=_on_device(batches, device),
+        data_provider=_on_device(stream, device),
     )
     trained = trainer.fit()
 
@@ -170,5 +187,6 @@ def train_with_saelens(
             config={
                 **(export_config or {}),
                 "trainer": f"saelens-{cfg.architecture}",
+                "b_dec_init": "geometric_median" if cfg.init_b_dec else "zero",
             },
         )

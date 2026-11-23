@@ -102,6 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
     group = train.add_argument_group("saelens trainer")
     group.add_argument("--architecture", choices=["topk", "batchtopk"], default="topk")
     group.add_argument("--aux-loss-coefficient", type=float, default=1.0)
+    group.add_argument("--zero-b-dec", action="store_true", help="start b_dec at zero as stock SAELens does")
     group.add_argument("--wandb", action="store_true", help="log SAELens metrics to Weights & Biases")
 
     evaluate = commands.add_parser(
@@ -308,6 +309,7 @@ def train_sae(args: argparse.Namespace) -> dict[str, Any]:
             total_tokens=args.total_tokens,
             batch_tokens=args.batch_tokens,
             amp=args.amp,
+            init_b_dec=not args.zero_b_dec,
             log_to_wandb=args.wandb,
             device=str(device),
         )

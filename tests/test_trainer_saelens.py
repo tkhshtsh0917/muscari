@@ -68,6 +68,48 @@ def test_export_matches_the_native_inference_model(source, tmp_path, monkeypatch
     assert evaluate_sae(exported, held_out)["fvu"] < 1.0
 
 
+def offset_batches(n_batches: int, *, batch: int = 512, d_in: int = 32, seed: int = 0) -> list[torch.Tensor]:
+    """Sparse combinations of fixed directions on top of a common component six times larger."""
+    fixed = torch.Generator().manual_seed(1234)
+    dictionary = torch.nn.functional.normalize(torch.randn(128, d_in, generator=fixed), dim=-1)
+    common = 12.0 * torch.nn.functional.normalize(torch.randn(d_in, generator=fixed), dim=0)
+
+    generator = torch.Generator().manual_seed(seed)
+    batches = []
+    for _ in range(n_batches):
+        chosen = torch.randint(128, (batch, 4), generator=generator)
+        weights = torch.rand(batch, 4, generator=generator) + 0.5
+        batches.append((weights.unsqueeze(-1) * dictionary[chosen]).sum(dim=1) + common)
+    return batches
+
+
+def test_decoder_bias_initialisation_prevents_collapse_on_a_common_component(tmp_path):
+    import muscari.trainers.saelens as backend
+
+    held_out = torch.cat(offset_batches(8, seed=1))
+    metrics = {}
+    for init_b_dec in (True, False):
+        cfg = SAELensTrainerConfig(
+            num_latents=256,
+            k=8,
+            dead_after_tokens=512 * 50,
+            total_tokens=512 * 300,
+            batch_tokens=512,
+            init_b_dec=init_b_dec,
+            device="cpu",
+        )
+        # Exactly total_steps batches: the batch used for the initialisation must still be trained on.
+        out = backend.train_with_saelens(cfg, 32, offset_batches(cfg.total_steps), tmp_path / str(init_b_dec))
+        exported = load_sae(out)
+        metrics[init_b_dec] = evaluate_sae(exported, held_out)
+        assert exported.config["b_dec_init"] == ("geometric_median" if init_b_dec else "zero")
+
+    assert metrics[True]["fvu"] < 0.7
+    assert metrics[False]["fvu"] > 1.0  # stock initialisation: worse than predicting the mean
+    assert metrics[False]["max_frequency"] == pytest.approx(1.0)
+    assert metrics[True]["max_frequency"] < 0.5
+
+
 @pytest.mark.parametrize("overrides", [{"architecture": "jumprelu"}, {"k": 0}, {"total_tokens": 1}, {"lr": -1.0}])
 def test_invalid_configurations_are_rejected(overrides):
     with pytest.raises(ValueError):
