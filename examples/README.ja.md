@@ -33,4 +33,6 @@ muscari train-sae \
   --out runs/ruri-v3-30m-sae-trial
 ```
 
-このリポジトリのmise環境では、検査中に何もダウンロードしないよう、Hugging Face Hubをオフラインにしています。Hubを使うコマンドでは`HF_HUB_OFFLINE=0`を指定してください。
+このリポジトリのmise環境では、検査中に何もダウンロードしないよう、Hugging Face Hubをオフラインにしています。その中で実行するときは、コマンドの前に`mise exec -- env HF_HUB_OFFLINE=0 uv run --frozen --no-sync`を付けてください。`mise exec`の前に変数を書いても効きません。
+
+MPSを使うApple M5 Proでは、このコマンドは200秒で終わりました。モデルとデータセットのダウンロード、ホールドアウト評価を含む時間です。得られた数値は[設計ガイド](../docs/ja/design.md#実際のエンコーダでの試走)にあります。

@@ -133,6 +133,7 @@ The decoder bias is folded into the encoder bias, so encoding is one affine map:
 | Auxiliary loss | AuxK with configurable `aux_k`, normalised by the residual variance | SAELens' own: `d_in // 2` dead latents, not normalised |
 | Dead latents | counted in tokens | counted in steps |
 | Schedule | 5% linear warmup, cosine decay to zero | linear warmup, cosine decay to `lr / 100` |
+| Decoder bias at the start | geometric median of the first batch | the same; SAELens' own default of zero with `--zero-b-dec` |
 | Checkpoint and resume | yes (`--checkpoint-every`, `--resume`) | no |
 | Logging | JSON lines | SAELens, optionally Weights & Biases |
 
@@ -156,10 +157,12 @@ Held-out texts are chosen by a hash of the text itself, so a passage that appear
 
 | Environment | What ran | Result |
 | --- | --- | --- |
-| Linux x86_64 CPU, Python 3.13, PyTorch 2.15 | formatting, lint, mypy, tests, package build, public-content audit | passed |
-| Linux x86_64 CPU, Python 3.13, PyTorch 2.6, Transformers 4.48, Datasets 3.0, safetensors 0.4.4 | tests without the SAELens extra | passed |
+| GitHub Actions, Ubuntu 24.04 | the locked `mise run check` on Python 3.12; the tests with the lowest supported versions on Python 3.11 (PyTorch 2.6, Transformers 4.48, Datasets 3.0, safetensors 0.4.4); the tests with the newest versions and SAELens on Python 3.13 | passed |
+| macOS 26.6, Apple M5 Pro, Python 3.12, PyTorch 2.15 | `mise run check`, including the four MPS tests and Betterleaks | passed |
+| The same Mac, MPS | a trial of 5 million tokens on `cl-nagoya/ruri-v3-30m` with both trainers, and the step benchmark | ran end to end; numbers in the [design guide](docs/design.md#trial-on-a-real-encoder) |
+| Linux x86_64 CPU, Python 3.13, PyTorch 2.15 | formatting, lint, mypy, tests, package build, public-content audit, step benchmark | passed |
 
-Not run yet: Apple MPS, CUDA (including bfloat16 autocast on CUDA), and any real encoder. All tests use a randomly initialised two-layer BERT, which checks interfaces and numerics, not SAE quality.
+Not run yet: CUDA (including bfloat16 autocast on CUDA), a full-size run of 65,536 latents and one billion tokens on any encoder, and any measurement of retrieval quality. The automated tests use a randomly initialised two-layer BERT, which checks interfaces and numerics, not SAE quality. The trial on ruri-v3-30m is one short run with one seed.
 
 ## Limitations
 

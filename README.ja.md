@@ -133,6 +133,7 @@ features = exported.encode(hidden)  # (トークン数, 潜在数)。非ゼロ�
 | 補助損失 | AuxK。`aux_k`を指定でき、残差の分散で正規化します | SAELensの実装。死んだ潜在を`d_in // 2`個使い、正規化しません |
 | 死んだ潜在の判定 | トークン数で数えます | ステップ数で数えます |
 | 学習率 | 5%の線形ウォームアップ、0までのコサイン減衰 | 線形ウォームアップ、`lr / 100`までのコサイン減衰 |
+| デコーダのバイアスの初期値 | 最初のバッチの幾何中央値 | 同じ。`--zero-b-dec`でSAELens本来の0に戻せます |
 | チェックポイントと再開 | あり（`--checkpoint-every`、`--resume`） | なし |
 | ログ | JSON Lines | SAELens。Weights & Biasesも使えます |
 
@@ -156,10 +157,12 @@ features = exported.encode(hidden)  # (トークン数, 潜在数)。非ゼロ�
 
 | 環境 | 実行した内容 | 結果 |
 | --- | --- | --- |
-| Linux x86_64 CPU、Python 3.13、PyTorch 2.15 | 整形、lint、mypy、テスト、パッケージビルド、公開内容の監査 | 成功 |
-| Linux x86_64 CPU、Python 3.13、PyTorch 2.6、Transformers 4.48、Datasets 3.0、safetensors 0.4.4 | SAELensなしのテスト | 成功 |
+| GitHub Actions、Ubuntu 24.04 | Python 3.12でロック済みの`mise run check`。Python 3.11で対応範囲の最も古い版（PyTorch 2.6、Transformers 4.48、Datasets 3.0、safetensors 0.4.4）のテスト。Python 3.13で最新の版とSAELensを入れたテスト | 成功 |
+| macOS 26.6、Apple M5 Pro、Python 3.12、PyTorch 2.15 | `mise run check`。MPSのテスト4件とBetterleaksを含みます | 成功 |
+| 同じMac、MPS | `cl-nagoya/ruri-v3-30m`で500万トークンの試走（両方のトレーナー）と、ステップのベンチマーク | 最後まで動作。数値は[設計ガイド](docs/ja/design.md#実際のエンコーダでの試走)を参照 |
+| Linux x86_64 CPU、Python 3.13、PyTorch 2.15 | 整形、lint、mypy、テスト、パッケージビルド、公開内容の監査、ステップのベンチマーク | 成功 |
 
-未実行：Apple MPS、CUDA（CUDA上のbfloat16 autocastを含む）、実際のエンコーダでの学習。テストはすべて、ランダムに初期化した2層のBERTを使います。確認しているのはインターフェースと数値計算で、SAEの品質ではありません。
+未実行：CUDA（CUDA上のbfloat16 autocastを含む）、潜在65,536個・10億トークンの本来の規模での学習、検索性能の測定。自動テストはランダムに初期化した2層のBERTを使います。確認しているのはインターフェースと数値計算で、SAEの品質ではありません。ruri-v3-30mでの試走は、シード一つの短い実行1回です。
 
 ## 制限
 

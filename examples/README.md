@@ -33,4 +33,6 @@ muscari train-sae \
   --out runs/ruri-v3-30m-sae-trial
 ```
 
-Inside this repository's mise environment the Hugging Face Hub is switched to offline mode so that checks never download anything. Set `HF_HUB_OFFLINE=0` for commands that need the Hub.
+Inside this repository's mise environment the Hugging Face Hub is switched to offline mode so that checks never download anything. There, prefix the command with `mise exec -- env HF_HUB_OFFLINE=0 uv run --frozen --no-sync`. Setting the variable in front of `mise exec` has no effect.
+
+On an Apple M5 Pro with MPS this command took 200 seconds, including the download of the model and the dataset subset and the held-out evaluation. The numbers it produced are in the [design guide](../docs/design.md#trial-on-a-real-encoder).

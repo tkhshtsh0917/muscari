@@ -83,7 +83,18 @@ Measured with `benchmarks/sae_step.py` (65,536 latents, width 768, `k = 16`, `au
 | 8,192 | 50% | on | 16.9 s, 5.7 GB | not run |
 | 8,192 | – | off | 5.7 s, 4.6 GB | out of memory (7 GB machine) |
 
-Memory is the peak resident size of the process. These numbers describe one small CPU. They are not a statement about GPUs, where the ratio between gathers and matrix products differs.
+Memory is the peak resident size of the process.
+
+The same benchmark on an Apple M5 Pro (macOS 26.6, PyTorch 2.15, 10% dead latents, median of 4 steps after the first):
+
+| Device | Batch tokens | Auxiliary loss | Sparse backward | Dense autograd |
+| --- | ---: | --- | ---: | ---: |
+| MPS | 2,048 | on | 0.17 s, 4.9 GB | 0.55 s, 6.0 GB |
+| MPS | 8,192 | on | 0.60 s, 13.2 GB | not run |
+| MPS | 8,192 | off | 0.52 s, 12.1 GB | not run |
+| CPU, 1 thread | 2,048 | on | 0.51 s, 3.2 GB | not run |
+
+On MPS, memory is what the driver has allocated at the end of the run, which includes the allocator's cache and is larger than the tensors in use. At 0.60 s per step of 8,192 tokens, the SAE updates alone would take about 20 hours for one billion tokens on this machine, before the time of the encoder. CUDA has not been measured, and the threshold of `64 * aux_k` was chosen from the CPU measurements only.
 
 ### 6. Trainers
 
@@ -108,6 +119,10 @@ A checkpoint holds the SAE, the optimizer state, the dead-latent counts, the ste
 | `aux_loss_coefficient` | `aux_loss_coefficient` |
 
 Fixed inside SAELens 6.56 and therefore different from `shizuku`: the auxiliary loss uses `d_in // 2` dead latents, is not divided by the residual variance, and is scaled down when fewer dead latents exist; `batchtopk` keeps the `k * batch` largest activations of the whole batch and is saved as a JumpReLU SAE with one threshold per latent, so the number of active latents varies between tokens. Activation normalisation is switched off because it cannot be folded into the exported weights.
+
+muscari changes one thing: the decoder bias starts at the geometric median of the first batch, as in the `shizuku` trainer, where SAELens starts it at zero. Encoder hidden states can share a large common component. With a zero bias the top-k selection then locks onto the few latents aligned with that component; a regression test reproduces this on synthetic activations, where one latent fires on every token and the reconstruction is worse than predicting the mean. `--zero-b-dec` restores SAELens' own initialisation.
+
+A short run is not enough to judge this backend. With SAELens' default decoder scale, most latents go unused early in training and its auxiliary loss brings them back over time. This was seen on synthetic activations and has not been measured on a real encoder.
 
 ### 7. Export format (`muscari.export`)
 
@@ -150,6 +165,34 @@ The paper was read in its arXiv v1 HTML form (Sections 2.1 to 2.4, Appendices A 
 
 The model card of the SAE used by Shizuku states: 65,536 latents, `k = 16`, AuxK with 256 latents and coefficient 1/32, Adam at 5e-4, 5% warmup with cosine decay, batches of 8,192 tokens, a maximum length of 1,024 and one billion training tokens. Everything the card does not state (initialisation, dead bookkeeping, shuffling, prefix handling, the loss normalisation) is muscari's own choice, mostly following Gao et al. The `shizuku` trainer is therefore a reimplementation of a published recipe, not a reproduction of that model.
 
+## Trial on a real encoder
+
+One short run per trainer on an Apple M5 Pro with MPS, to check that the pipeline works with a real model, tokenizer and dataset. It is not a statement about SAE quality: the budget is 0.5% of the recipe's one billion tokens, there is one seed, and no reference value exists to compare with.
+
+| Setting | Value |
+| --- | --- |
+| Encoder | `cl-nagoya/ruri-v3-30m`, `last_hidden_state`, width 256 |
+| Data | subset `jsquad` of `cl-nagoya/ruri-v3-dataset-ft`; columns `anc` with `検索クエリ: `, `pos` and `neg` with `検索文書: ` |
+| SAE | 8,192 latents, `k = 16` |
+| Budget | 5 million tokens (610 steps of 8,192), dead after 1 million tokens, 5% of the texts held out |
+
+| | `shizuku` | `saelens` (`topk`, zero decoder bias) |
+| --- | ---: | ---: |
+| FVU on 200,000 held-out tokens | 0.441 | 0.511 |
+| Active latents per token | 16 | 16 |
+| Latents that never fired | 0% | 91.5% |
+| Latents firing on more than 10% of tokens | 0% | 0.4% |
+| Largest firing share of one latent | 6.3% | 23.7% |
+| Wall time, with downloads and evaluation | 200 s | 189 s |
+
+Evaluated on 200,000 tokens of the `jaquad` subset, which was not used for training, the `shizuku` SAE had an FVU of 0.447, no latent that never fired, and one latent above 10% (10.1%). The run encoded 31,616 distinct texts, 5.52 million content tokens, at about 42,000 tokens per second including the encoder.
+
+What this run does not show:
+
+- The log of the `shizuku` run shows no dead latent and a zero auxiliary loss at every logged step, so AuxK was not exercised on real activations.
+- The SAELens run was made before muscari initialised its decoder bias and has not been repeated since. Its unused latents may come from the zero bias, from the short budget, or both; see the notes on the SAELens backend above.
+- The two columns differ in auxiliary loss, dead-latent bookkeeping, decoder scaling and initialisation. They are not a like-for-like comparison of the trainers.
+
 ## What is verified
 
 - Losses and gradients of the sparse backward pass: against dense autograd and numerical differentiation.
@@ -158,14 +201,16 @@ The model card of the SAE used by Shizuku states: 65,536 latents, `k = 16`, AuxK
 - Content-token selection: against a manual forward pass, with fast and offset-less tokenizers.
 - Holdout split: disjoint, deterministic, independent of prefix and row.
 
-All of this uses a randomly initialised two-layer BERT or synthetic activations. See the [validation status](../README.md#validation-status) for the environments that ran.
+- Apple MPS: losses, gradients and activations agree with the CPU, and the trial above ran end to end.
+
+Except for the trial above, all of this uses a randomly initialised two-layer BERT or synthetic activations. See the [validation status](../README.md#validation-status) for the environments that ran.
 
 ## What is not verified
 
 - SAE quality on a real encoder: reconstruction, dead and dense latents at 65,536 latents and one billion tokens.
 - That an SAE trained here improves retrieval when used as a sparse vocabulary.
+- AuxK and the SAELens backend with the new bias initialisation on real activations.
 - CUDA, including bfloat16 autocast on CUDA. The autocast code path is exercised on CPU only.
-- The lowest supported dependency versions on Python 3.11 outside CI.
 
 ## Research background
 

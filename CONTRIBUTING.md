@@ -37,7 +37,13 @@ mise run check
 
 The main CI job runs the same locked setup and check tasks. Separate compatibility jobs resolve the lowest supported versions on Python 3.11 without the SAELens extra, and the newest versions on Python 3.13, record what was installed and run the tests. Actions are pinned to commit SHAs; update the SHA and the version comment together.
 
-The mise environment sets `HF_HUB_OFFLINE=1`. No check downloads a model or a dataset. Set `HF_HUB_OFFLINE=0` on the command line for runs that need the Hugging Face Hub.
+The mise environment sets `HF_HUB_OFFLINE=1`. No check downloads a model or a dataset. For a run that needs the Hugging Face Hub, set the variable inside the mise environment:
+
+```bash
+mise exec -- env HF_HUB_OFFLINE=0 uv run --frozen --no-sync muscari train-sae ...
+```
+
+Writing `HF_HUB_OFFLINE=0` in front of `mise exec` has no effect, because mise applies `mise.toml` afterwards.
 
 ## Tests
 

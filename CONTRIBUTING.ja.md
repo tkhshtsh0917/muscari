@@ -37,7 +37,13 @@ mise run check
 
 CIの主ジョブは、同じロック済みのsetupとcheckを実行します。別の互換性ジョブでは、Python 3.11で対応範囲の最も古い版（SAELensなし）を、Python 3.13で最新の版を解決し、インストールされた版を記録してテストを実行します。ActionsはコミットSHAで固定しています。SHAとバージョンのコメントは一緒に更新してください。
 
-mise環境は`HF_HUB_OFFLINE=1`を設定します。どの検査もモデルやデータセットをダウンロードしません。Hugging Face Hubが必要な実行では、コマンドラインで`HF_HUB_OFFLINE=0`を指定してください。
+mise環境は`HF_HUB_OFFLINE=1`を設定します。どの検査もモデルやデータセットをダウンロードしません。Hugging Face Hubが必要な実行では、mise環境の内側で変数を設定してください。
+
+```bash
+mise exec -- env HF_HUB_OFFLINE=0 uv run --frozen --no-sync muscari train-sae ...
+```
+
+`mise exec`の前に`HF_HUB_OFFLINE=0`を書いても効きません。miseがその後で`mise.toml`の値を適用するためです。
 
 ## テスト
 
