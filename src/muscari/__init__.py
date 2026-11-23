@@ -3,16 +3,26 @@
 from .activations import EncoderActivationSource, shuffled_batches
 from .data import TextColumn, is_holdout, iter_texts, repeat_texts
 from .devices import resolve_device
+from .export import ExportedSAE, evaluate_sae, load_sae, save_saelens_sae, save_topk_sae
+from .sae import TopKSAE, geometric_median, normalized_mse
 
 __version__ = "0.1.0.dev0"
 
 __all__ = [
     "EncoderActivationSource",
+    "ExportedSAE",
     "TextColumn",
+    "TopKSAE",
     "__version__",
+    "evaluate_sae",
+    "geometric_median",
     "is_holdout",
     "iter_texts",
+    "load_sae",
+    "normalized_mse",
     "repeat_texts",
     "resolve_device",
+    "save_saelens_sae",
+    "save_topk_sae",
     "shuffled_batches",
 ]
