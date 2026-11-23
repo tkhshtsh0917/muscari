@@ -310,6 +310,7 @@ def train_sae(args: argparse.Namespace) -> dict[str, Any]:
             batch_tokens=args.batch_tokens,
             amp=args.amp,
             init_b_dec=not args.zero_b_dec,
+            seed=args.seed,
             log_to_wandb=args.wandb,
             device=str(device),
         )

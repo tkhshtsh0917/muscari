@@ -59,6 +59,7 @@ class SAELensTrainerConfig:
         amp: let SAELens run under autocast.
         init_b_dec: start the decoder bias at the geometric median of the first batch, as the
             ``shizuku`` trainer does. SAELens itself starts it at zero.
+        seed: seed for the SAE initialisation.
         log_to_wandb: send SAELens' metrics to Weights & Biases.
         wandb_project: project name used when logging is on.
         device: ``"auto"`` or a device string.
@@ -77,6 +78,7 @@ class SAELensTrainerConfig:
     batch_tokens: int = 8192
     amp: bool = False
     init_b_dec: bool = True
+    seed: int = 42
     log_to_wandb: bool = False
     wandb_project: str = "muscari"
     device: str = "auto"
@@ -142,6 +144,7 @@ def train_with_saelens(
         normalize_activations="none",
         device=str(device),
     )
+    torch.manual_seed(cfg.seed)
     sae = TrainingSAE.from_dict(sae_config.to_dict())
 
     stream = iter(batches)

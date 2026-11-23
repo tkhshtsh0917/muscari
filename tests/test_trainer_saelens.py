@@ -110,6 +110,28 @@ def test_decoder_bias_initialisation_prevents_collapse_on_a_common_component(tmp
     assert metrics[True]["max_frequency"] < 0.5
 
 
+def test_the_seed_fixes_the_initialisation(tmp_path):
+    import muscari.trainers.saelens as backend
+
+    def train(name: str, seed: int) -> torch.Tensor:
+        torch.manual_seed(len(name))  # whatever the global generator holds must not matter
+        cfg = SAELensTrainerConfig(
+            num_latents=64,
+            k=4,
+            total_tokens=512 * 5,
+            batch_tokens=512,
+            seed=seed,
+            device="cpu",
+        )
+        out = backend.train_with_saelens(cfg, 32, offset_batches(cfg.total_steps), tmp_path / name)
+        return load_sae(out).encoder_weight
+
+    first = train("a", seed=7)
+
+    assert torch.equal(train("bb", seed=7), first)
+    assert not torch.equal(train("ccc", seed=8), first)
+
+
 @pytest.mark.parametrize("overrides", [{"architecture": "jumprelu"}, {"k": 0}, {"total_tokens": 1}, {"lr": -1.0}])
 def test_invalid_configurations_are_rejected(overrides):
     with pytest.raises(ValueError):
