@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "muscari"
+version = "0.1.0.dev0"
+description = "Sparse autoencoders for text encoders"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE.md"]
+requires-python = ">=3.11"
+dependencies = [
+  "torch>=2.6,<3",
+  "transformers>=4.48,<6",
+  "datasets>=3,<6",
+  "safetensors>=0.4.4,<1",
+]
+
+[project.optional-dependencies]
+saelens = ["sae-lens>=6.56,<7"]
+
+[project.scripts]
+muscari = "muscari.cli:main"
+
+[project.urls]
+Repository = "https://github.com/tkhshtsh0917/muscari"
+
+[dependency-groups]
+dev = ["pytest>=9,<10", "build>=1,<2", "setuptools>=77.0.3", "ruff>=0.14", "mypy==2.4.1"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["muscari*"]
+
+[tool.setuptools.package-data]
+muscari = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["mps: tests that need an Apple MPS device"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "UP"]
+
+[tool.mypy]
+files = ["src/muscari"]
+check_untyped_defs = true
+disallow_untyped_defs = true
+warn_unused_ignores = true
+no_implicit_optional = true
+follow_imports = "silent"
+
+[[tool.mypy.overrides]]
+module = ["sae_lens.*", "datasets.*", "transformers.*"]
+ignore_missing_imports = true

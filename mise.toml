@@ -1,0 +1,56 @@
+# mise owns uv and Betterleaks; uv owns Python as declared in .python-version.
+[tools]
+uv = "0.13.6"
+betterleaks = "1.10.1"
+
+[env]
+OMP_NUM_THREADS = "1"
+TOKENIZERS_PARALLELISM = "false"
+HF_HUB_OFFLINE = "1"
+
+[tasks.setup]
+description = "Install the exact development environment, including the SAELens backend"
+run = "uv sync --locked --extra saelens --group dev"
+
+[tasks.format]
+run = "uv run --frozen --no-sync ruff format src tests examples benchmarks scripts"
+
+[tasks.format-check]
+run = "uv run --frozen --no-sync ruff format --check src tests examples benchmarks scripts"
+
+[tasks.lint]
+run = "uv run --frozen --no-sync ruff check src tests examples benchmarks scripts"
+
+[tasks.typecheck]
+run = "uv run --frozen --no-sync mypy"
+
+[tasks.test]
+run = "uv run --frozen --no-sync pytest -q"
+
+[tasks.smoke]
+description = "Train a tiny offline SAE with both trainers"
+run = [
+  "uv run --frozen --no-sync python examples/train_tiny.py --trainer shizuku",
+  "uv run --frozen --no-sync python examples/train_tiny.py --trainer saelens",
+]
+
+[tasks.build]
+run = "uv run --frozen --no-sync python -m build --no-isolation"
+
+[tasks.audit]
+run = "uv run --frozen --no-sync python scripts/check_public.py --artifacts"
+
+[tasks.secrets]
+description = "Scan public files, unpacked artifacts and available Git history"
+run = "uv run --frozen --no-sync python scripts/check_secrets.py"
+
+[tasks.check]
+description = "Run the same quality gates locally and in CI"
+run = [
+  "mise run format-check",
+  "mise run lint",
+  "mise run typecheck",
+  "mise run test",
+  "mise run build",
+  "mise run secrets",
+]

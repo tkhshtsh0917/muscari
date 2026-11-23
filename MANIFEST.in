@@ -1,0 +1,10 @@
+include LICENSE README.md README.ja.md NOTICE.md CONTRIBUTING.md CONTRIBUTING.ja.md AGENTS.md
+include mise.toml .python-version
+include uv.lock
+recursive-include docs *.md
+recursive-include examples *.py *.md
+recursive-include benchmarks *.py
+recursive-include tests *.py
+recursive-include scripts *.py
+prune .private
+prune .venv
