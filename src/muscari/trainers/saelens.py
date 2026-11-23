@@ -4,7 +4,7 @@ SAELens' stock runner loads decoder LLMs through TransformerLens. ``SAETrainer``
 needs an iterator of ``(batch, d_in)`` activation tensors, which is what
 ``muscari.activations`` produces, so the encoder never has to be wrapped as a hooked model.
 
-Differences from ``ShizukuTrainer`` that are fixed inside SAELens (checked against 6.56):
+Differences from ``TopKTrainer`` that are fixed inside SAELens (checked against 6.56):
 
 * the auxiliary loss uses ``d_in // 2`` dead latents instead of a configurable ``aux_k`` and
   is not variance-normalised, so ``aux_loss_coefficient`` lives on a different scale;
@@ -48,7 +48,7 @@ class SAELensTrainerConfig:
         num_latents: dictionary size (``d_sae`` in SAELens).
         k: active latents per token (on average for ``batchtopk``).
         aux_loss_coefficient: SAELens' weight of its auxiliary loss. Not comparable to
-            ``ShizukuTrainerConfig.aux_coef``.
+            ``TopKTrainerConfig.aux_coef``.
         dead_after_tokens: converted to SAELens' ``dead_feature_window`` in steps.
         lr: peak learning rate.
         lr_end: learning rate at the end of the cosine schedule.
@@ -58,7 +58,7 @@ class SAELensTrainerConfig:
         batch_tokens: activations per optimisation step.
         amp: let SAELens run under autocast.
         init_b_dec: start the decoder bias at the geometric median of the first batch, as the
-            ``shizuku`` trainer does. SAELens itself starts it at zero.
+            ``topk`` trainer does. SAELens itself starts it at zero.
         seed: seed for the SAE initialisation.
         log_to_wandb: send SAELens' metrics to Weights & Biases.
         wandb_project: project name used when logging is on.

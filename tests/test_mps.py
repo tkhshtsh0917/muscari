@@ -6,7 +6,7 @@ import pytest
 import torch
 from tiny import DOC_PREFIX, QUERY_PREFIX
 
-from muscari import EncoderActivationSource, ShizukuTrainer, ShizukuTrainerConfig, TopKSAE, resolve_device
+from muscari import EncoderActivationSource, TopKSAE, TopKTrainer, TopKTrainerConfig, resolve_device
 
 pytestmark = [
     pytest.mark.mps,
@@ -43,7 +43,7 @@ def test_loss_and_gradients_match_the_cpu():
 
 
 def test_trainer_learns_on_mps():
-    cfg = ShizukuTrainerConfig(
+    cfg = TopKTrainerConfig(
         num_latents=256,
         k=4,
         aux_k=16,
@@ -53,7 +53,7 @@ def test_trainer_learns_on_mps():
         lr=3e-3,
         device="mps",
     )
-    trainer = ShizukuTrainer(cfg, d_in=24)
+    trainer = TopKTrainer(cfg, d_in=24)
     generator = torch.Generator().manual_seed(42)
     directions = torch.nn.functional.normalize(torch.randn(64, 24, generator=generator), dim=-1)
 

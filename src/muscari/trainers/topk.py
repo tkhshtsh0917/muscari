@@ -1,10 +1,11 @@
 """A self-contained Top-K SAE training loop.
 
-"Shizuku" refers to mahiyama's Japanese SAE-SPLADE models. Their training code is not public.
-This is an independent implementation of the recipe that the SAE model card describes: a
-Top-K SAE with AuxK, Adam, 5% linear warmup followed by cosine decay, and batches counted in
-tokens. The defaults are the values reported on that card. The SAE mechanics (tied
-initialisation, unit-norm decoder, AuxK, dead-latent bookkeeping) follow Gao et al. (2024).
+The mechanics (tied initialisation, unit-norm decoder, AuxK, dead-latent bookkeeping) follow
+Gao et al. (2024). The default hyperparameters are the ones stated on the model card of
+``mahiyama/modernbert-ja-310m-sae``, the SAE behind the Japanese SAE-SPLADE models "Shizuku":
+65,536 latents, ``k = 16``, AuxK with 256 latents and coefficient 1/32, Adam at 5e-4, 5% linear
+warmup followed by cosine decay, and batches of 8,192 tokens. The training code of those models
+is not public; this is an independent implementation, not a reproduction of that SAE.
 """
 
 from __future__ import annotations
@@ -33,8 +34,8 @@ _RESUME_KEYS = ("num_latents", "k", "batch_tokens")
 
 
 @dataclass
-class ShizukuTrainerConfig:
-    """Hyperparameters of ``ShizukuTrainer``.
+class TopKTrainerConfig:
+    """Hyperparameters of ``TopKTrainer``.
 
     Attributes:
         num_latents: dictionary size ``M``.
@@ -103,7 +104,7 @@ def warmup_cosine(step: int, total_steps: int, warmup_steps: int) -> float:
     return 0.5 * (1.0 + math.cos(math.pi * min(1.0, progress)))
 
 
-class ShizukuTrainer:
+class TopKTrainer:
     """Trains a ``TopKSAE`` on batches of activations.
 
     Args:
@@ -117,7 +118,7 @@ class ShizukuTrainer:
         tokens_since_fired: per-latent count of tokens since the latent last fired.
     """
 
-    def __init__(self, cfg: ShizukuTrainerConfig, d_in: int) -> None:
+    def __init__(self, cfg: TopKTrainerConfig, d_in: int) -> None:
         self.cfg = cfg
         self.device = resolve_device(cfg.device)
 

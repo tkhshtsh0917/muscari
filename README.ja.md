@@ -35,7 +35,7 @@ ruri-v3の最終層で、ruri-v3の微調整に使われたデータを使って
 
 ```bash
 muscari train-sae \
-  --trainer shizuku \
+  --trainer topk \
   --model cl-nagoya/ruri-v3-310m \
   --dataset cl-nagoya/ruri-v3-dataset-ft \
   --subsets auto-wiki-qa-nemotron jaquad jqara jsquad miracl mkqa mr-tydi quiz-no-mori quiz-works \
@@ -56,7 +56,7 @@ muscari train-sae --trainer saelens --architecture topk ...
 
 ```bash
 muscari train-sae \
-  --trainer shizuku \
+  --trainer topk \
   --model cl-nagoya/ruri-v3-310m \
   --data-files corpus.txt \
   --columns "text=検索文書: " \
@@ -76,8 +76,8 @@ muscari eval-sae --sae runs/ruri-v3-310m-sae --data-files other.jsonl --columns 
 ```python
 from muscari import (
     EncoderActivationSource,
-    ShizukuTrainer,
-    ShizukuTrainerConfig,
+    TopKTrainer,
+    TopKTrainerConfig,
     TextColumn,
     iter_texts,
     load_sae,
@@ -99,12 +99,12 @@ batches = shuffled_batches(
     buffer_tokens=524_288,
 )
 
-config = ShizukuTrainerConfig(
+config = TopKTrainerConfig(
     num_latents=16_384,
     k=16,
     total_tokens=50_000_000,
 )
-trainer = ShizukuTrainer(config, d_in=source.d_in)
+trainer = TopKTrainer(config, d_in=source.d_in)
 sae = trainer.fit(batches, out_dir="runs/sae")
 save_topk_sae("runs/sae", sae, {"base_model": "cl-nagoya/ruri-v3-30m"})
 
@@ -120,13 +120,13 @@ features = exported.encode(hidden)  # (トークン数, 潜在数)。非ゼロ�
 | `sae.safetensors` | `encoder.weight (M, d)`、`encoder.bias (M)`、`decoder.weight (d, M)`、`decoder.bias (d)`。JumpReLU型のSAEでは`threshold (M)`も含みます |
 | `sae_config.json` | サイズ、活性化の規則、`k`、元のモデル、層、データセット、列とプレフィックス、ホールドアウトの割合、トレーナー、学習トークン数 |
 | `metrics.json` | 学習後のホールドアウト評価 |
-| `train_log.jsonl`、`trainer_config.json`、`checkpoint.pt` | `shizuku`トレーナーのみ |
+| `train_log.jsonl`、`trainer_config.json`、`checkpoint.pt` | `topk`トレーナーのみ |
 
 デコーダのバイアスはエンコーダのバイアスに畳み込んであります。符号化はアフィン変換一つで済みます。`pre = x @ encoder.weight.T + encoder.bias`を計算し、トークンごとにReLU後の上位`k`個を残します。ローカルのパスはファイル名だけを記録します。
 
 ## 二つのトレーナー
 
-| | `shizuku` | `saelens` |
+| | `topk` | `saelens` |
 | --- | --- | --- |
 | 実装 | このリポジトリ | [SAELens](https://pypi.org/project/sae-lens/)の`SAETrainer`（任意の追加依存） |
 | 構造 | Top-K | Top-K、BatchTopK（JumpReLUとして書き出し） |
@@ -137,7 +137,7 @@ features = exported.encode(hidden)  # (トークン数, 潜在数)。非ゼロ�
 | チェックポイントと再開 | あり（`--checkpoint-every`、`--resume`） | なし |
 | ログ | JSON Lines | SAELens。Weights & Biasesも使えます |
 
-`shizuku`は、mahiyama氏の[Shizuku](https://huggingface.co/mahiyama/sae-splade-ja-310m)が使うSAEのモデルカードに書かれた学習設定を、独立に実装したものです。元の学習コードは公開されておらず、このプロジェクトは作者と関係ありません。詳細とGaoらとの違いは[設計ガイド](docs/ja/design.md)にまとめています。
+`topk`はこのリポジトリ独自の学習ループです。仕組みはGaoらに従い、既定のハイパーパラメータはmahiyama氏の[Shizuku](https://huggingface.co/mahiyama/sae-splade-ja-310m)が使うSAEのモデルカードの値です。元の学習コードは公開されておらず、このプロジェクトは作者と関係ありません。カードに書かれていること、書かれていないこと、カードの設定で実行する方法は[設計ガイド](docs/ja/design.md#shizukuのsaeのカードの設定で実行する)にまとめています。
 
 ## 評価
 
@@ -181,7 +181,7 @@ features = exported.encode(hidden)  # (トークン数, 潜在数)。非ゼロ�
 ## 謝辞
 
 - Gaoら、[Scaling and evaluating sparse autoencoders](https://arxiv.org/abs/2406.04093)：Top-K SAE、AuxK、初期化。細部の確認のために[参照実装](https://github.com/openai/sparse_autoencoder)を読みました。疎な逆伝播もこの実装に着想を得ています。
-- mahiyama氏の[Shizuku](https://huggingface.co/mahiyama/sae-splade-ja-310m)と、`shizuku`トレーナーが従う[SAEのモデルカード](https://huggingface.co/mahiyama/modernbert-ja-310m-sae)。
+- mahiyama氏の[Shizuku](https://huggingface.co/mahiyama/sae-splade-ja-310m)と、`topk`トレーナーが従う[SAEのモデルカード](https://huggingface.co/mahiyama/modernbert-ja-310m-sae)。
 - [From Tokens to Concepts: Leveraging SAE for SPLADE](https://arxiv.org/abs/2604.21511)（SAE-SPLADE）と[Learning Retrieval Models with Sparse Autoencoders](https://arxiv.org/abs/2603.13277)（SPLARE）：このツールが対象とする検索の枠組み。
 - [SAELens](https://pypi.org/project/sae-lens/)：二つ目の学習バックエンド。
 - [ruri-v3](https://huggingface.co/cl-nagoya/ruri-v3-310m)とその[微調整データセット](https://huggingface.co/datasets/cl-nagoya/ruri-v3-dataset-ft)：説明の例として使っています。

@@ -19,7 +19,7 @@ def example():
     return module
 
 
-@pytest.mark.parametrize("trainer", ["shizuku", "saelens"])
+@pytest.mark.parametrize("trainer", ["topk", "saelens"])
 def test_example_trains_exports_and_evaluates(example, tmp_path, trainer):
     if trainer == "saelens":
         pytest.importorskip("sae_lens")

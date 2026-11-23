@@ -7,9 +7,9 @@
 `train_tiny.py`は、ランダムな重みの2層BERTと、数百行の合成したクエリ・文書データを一時ディレクトリに作ります。そこで`muscari train-sae`を実行し、書き出したSAEを`muscari eval-sae`で評価します。ダウンロードは行わず、CPUでも数秒で終わります。
 
 ```bash
-python examples/train_tiny.py --trainer shizuku
+python examples/train_tiny.py --trainer topk
 python examples/train_tiny.py --trainer saelens    # "saelens"の追加依存が必要です
-python examples/train_tiny.py --trainer shizuku --workdir runs/tiny    # ファイルを残す場合
+python examples/train_tiny.py --trainer topk --workdir runs/tiny    # ファイルを残す場合
 ```
 
 開発用のチェックアウトでは、`mise run smoke`で両方のトレーナーを実行できます。
@@ -22,7 +22,7 @@ ruri-v3での実行方法は[README](../README.ja.md#クイックスタート)�
 
 ```bash
 muscari train-sae \
-  --trainer shizuku \
+  --trainer topk \
   --model cl-nagoya/ruri-v3-30m \
   --dataset cl-nagoya/ruri-v3-dataset-ft \
   --subsets jsquad \

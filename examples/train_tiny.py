@@ -6,7 +6,7 @@ hundred synthetic query/passage rows in a temporary directory, runs ``muscari tr
 then ``muscari eval-sae`` on them. It downloads nothing and finishes in seconds on a CPU. The
 numbers it prints say nothing about SAE quality on a real encoder.
 
-    python examples/train_tiny.py --trainer shizuku
+    python examples/train_tiny.py --trainer topk
     python examples/train_tiny.py --trainer saelens   # needs the "saelens" extra
 """
 
@@ -123,7 +123,7 @@ def run(trainer: str, workdir: Path, device: str) -> dict[str, float]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--trainer", choices=["shizuku", "saelens"], default="shizuku")
+    parser.add_argument("--trainer", choices=["topk", "saelens"], default="topk")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--workdir", help="keep the encoder, data and SAE here instead of a temporary directory")
     args = parser.parse_args()

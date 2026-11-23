@@ -7,8 +7,8 @@ from .export import ExportedSAE, evaluate_sae, load_sae, save_saelens_sae, save_
 from .sae import TopKSAE, geometric_median, normalized_mse
 from .trainers import (
     SAELensTrainerConfig,
-    ShizukuTrainer,
-    ShizukuTrainerConfig,
+    TopKTrainer,
+    TopKTrainerConfig,
     train_with_saelens,
 )
 
@@ -18,10 +18,10 @@ __all__ = [
     "EncoderActivationSource",
     "ExportedSAE",
     "SAELensTrainerConfig",
-    "ShizukuTrainer",
-    "ShizukuTrainerConfig",
     "TextColumn",
     "TopKSAE",
+    "TopKTrainer",
+    "TopKTrainerConfig",
     "__version__",
     "evaluate_sae",
     "geometric_median",

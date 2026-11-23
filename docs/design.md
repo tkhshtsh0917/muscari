@@ -12,7 +12,7 @@ SAE-based learned sparse retrieval replaces the vocabulary of a SPLADE-style mod
 
 ```text
 rows -> (prefix, text) -> frozen encoder -> content-token activations
-     -> shuffle buffer -> trainer (shizuku | saelens) -> sae.safetensors + sae_config.json
+     -> shuffle buffer -> trainer (topk | saelens) -> sae.safetensors + sae_config.json
      -> held-out evaluation
 ```
 
@@ -98,7 +98,7 @@ On MPS, memory is what the driver has allocated at the end of the run, which inc
 
 ### 6. Trainers
 
-**`shizuku`** takes one step per batch:
+**`topk`** takes one step per batch:
 
 1. set the learning rate: linear warmup over the first `warmup_frac` of the steps, then cosine decay to zero;
 2. compute the loss with the dead mask as it stands before the step;
@@ -118,9 +118,9 @@ A checkpoint holds the SAE, the optimizer state, the dead-latent counts, the ste
 | `dead_after_tokens / batch_tokens` | `dead_feature_window` (steps) |
 | `aux_loss_coefficient` | `aux_loss_coefficient` |
 
-Fixed inside SAELens 6.56 and therefore different from `shizuku`: the auxiliary loss uses `d_in // 2` dead latents, is not divided by the residual variance, and is scaled down when fewer dead latents exist; `batchtopk` keeps the `k * batch` largest activations of the whole batch and is saved as a JumpReLU SAE with one threshold per latent, so the number of active latents varies between tokens. Activation normalisation is switched off because it cannot be folded into the exported weights.
+Fixed inside SAELens 6.56 and therefore different from `topk`: the auxiliary loss uses `d_in // 2` dead latents, is not divided by the residual variance, and is scaled down when fewer dead latents exist; `batchtopk` keeps the `k * batch` largest activations of the whole batch and is saved as a JumpReLU SAE with one threshold per latent, so the number of active latents varies between tokens. Activation normalisation is switched off because it cannot be folded into the exported weights.
 
-muscari changes one thing: the decoder bias starts at the geometric median of the first batch, as in the `shizuku` trainer, where SAELens starts it at zero. Encoder hidden states can share a large common component. With a zero bias the top-k selection then locks onto the few latents aligned with that component; a regression test reproduces this on synthetic activations, where one latent fires on every token and the reconstruction is worse than predicting the mean. `--zero-b-dec` restores SAELens' own initialisation.
+muscari changes one thing: the decoder bias starts at the geometric median of the first batch, as in the `topk` trainer, where SAELens starts it at zero. Encoder hidden states can share a large common component. With a zero bias the top-k selection then locks onto the few latents aligned with that component; a regression test reproduces this on synthetic activations, where one latent fires on every token and the reconstruction is worse than predicting the mean. `--zero-b-dec` restores SAELens' own initialisation.
 
 A short run is not enough to judge this backend. With SAELens' default decoder scale, most latents go unused early in training and its auxiliary loss brings them back over time. This was seen on synthetic activations. The [trial on a real encoder](#trial-on-a-real-encoder) is consistent with it but does not isolate it.
 
@@ -148,7 +148,7 @@ A good FVU does not imply good retrieval. Latents that fire on a large share of 
 
 The paper was read in its arXiv v1 HTML form (Sections 2.1 to 2.4, Appendices A and B), and the [reference implementation](https://github.com/openai/sparse_autoencoder/tree/4965b941e9eb590b00b253a2c406db1e1b193942) in `sparse_autoencoder/train.py`.
 
-| Aspect | Gao et al. | `shizuku` trainer |
+| Aspect | Gao et al. | `topk` trainer |
 | --- | --- | --- |
 | Input preprocessing | subtract the mean over dimensions, scale each activation to unit norm | none: the SAE must work on raw hidden states at retrieval time |
 | Learning rate | constant | 5% warmup, cosine decay (SAE model card of Shizuku) |
@@ -163,7 +163,33 @@ The paper was read in its arXiv v1 HTML form (Sections 2.1 to 2.4, Appendices A 
 | Batch size | 131,072 tokens | 8,192 tokens (model card) |
 | Scale-out | sharded over GPUs with custom kernels | one device |
 
-The model card of the SAE used by Shizuku states: 65,536 latents, `k = 16`, AuxK with 256 latents and coefficient 1/32, Adam at 5e-4, 5% warmup with cosine decay, batches of 8,192 tokens, a maximum length of 1,024 and one billion training tokens. Everything the card does not state (initialisation, dead bookkeeping, shuffling, prefix handling, the loss normalisation) is muscari's own choice, mostly following Gao et al. The `shizuku` trainer is therefore a reimplementation of a published recipe, not a reproduction of that model.
+### Running with the settings of the Shizuku SAE card
+
+The [model card](https://huggingface.co/mahiyama/modernbert-ja-310m-sae) of the SAE used by Shizuku states the following, and the defaults of the `topk` trainer match all of it:
+
+- the final-layer `last_hidden_state` of a frozen `sbintuitions/modernbert-ja-310m`;
+- 65,536 latents, Top-K with `k = 16`, AuxK with 256 latents and coefficient 1/32;
+- Adam with betas 0.9 and 0.999 at 5e-4, warmup over the first 5% and cosine decay;
+- batches of 8,192 tokens, a maximum length of 1,024 and one billion training tokens;
+- deduplicated queries and documents, with 5% held out;
+- the tensor names, shapes and the folding of the decoder bias in the saved file.
+
+```bash
+muscari train-sae \
+  --trainer topk \
+  --model sbintuitions/modernbert-ja-310m \
+  --data-files corpus.jsonl \
+  --columns query document \
+  --out runs/modernbert-ja-310m-sae
+```
+
+Three things the card describes are outside this command:
+
+- **The data.** The card lists about 846 million tokens (70.1% documents, 14.9% queries, 14.9% Wikipedia articles) from mqa-ja, auto-wiki-qa, Japanese Wikipedia, mmarco-ja and smaller sets, some of them not public, with items that overlap certain evaluation sets removed. muscari ships no recipe for this corpus.
+- **The model revision.** The card names revision `77675fc`; pass the full commit hash with `--revision`.
+- **The evaluation.** The card reports an FVU of 0.155 on 2 million held-out document tokens, an MLM loss recovery of 0.944 and no feature unused over the last 10 million training tokens. muscari reports the first and the last of these in its own form and has no MLM loss recovery.
+
+Everything the card does not state (initialisation, the dead-latent threshold, shuffling, the loss normalisation, input normalisation, the training library) is muscari's own choice, mostly following Gao et al. The result is therefore a run with a published recipe, not a reproduction of that SAE. The saved tensors have the same layout as the card's file; loading one as the other has not been tried.
 
 ## Trial on a real encoder
 
@@ -177,7 +203,7 @@ Three short runs on an Apple M5 Pro with MPS, to check that the pipeline works w
 | Budget | 5 million tokens (610 steps of 8,192), dead after 1 million tokens, 5% of the texts held out |
 | Seed | 0, the default at the time |
 
-| | `shizuku` | `saelens` `topk`, zero decoder bias | `saelens` `topk`, median decoder bias |
+| | `topk` | `saelens` `topk`, zero decoder bias | `saelens` `topk`, median decoder bias |
 | --- | ---: | ---: | ---: |
 | FVU on 200,000 held-out tokens | 0.441 | 0.511 | 0.467 |
 | Active latents per token | 16 | 16 | 16 |
@@ -186,7 +212,7 @@ Three short runs on an Apple M5 Pro with MPS, to check that the pipeline works w
 | Largest firing share of one latent | 6.3% | 23.7% | 7.4% |
 | Wall time, with evaluation | 200 s | 189 s | 193 s |
 
-The first run includes the download of the model and the dataset subset. Evaluated on 200,000 tokens of the `jaquad` subset, which was not used for training, the `shizuku` SAE had an FVU of 0.447, no latent that never fired, and one latent above 10% (10.1%). Each run encoded 31,616 distinct texts, 5.52 million content tokens; the `shizuku` run did so at about 42,000 tokens per second including the encoder.
+The first run includes the download of the model and the dataset subset. Evaluated on 200,000 tokens of the `jaquad` subset, which was not used for training, the `topk` SAE had an FVU of 0.447, no latent that never fired, and one latent above 10% (10.1%). Each run encoded 31,616 distinct texts, 5.52 million content tokens; the `topk` run did so at about 42,000 tokens per second including the encoder.
 
 What the runs show beyond "it works":
 
@@ -196,7 +222,7 @@ What the runs show beyond "it works":
 
 What they do not show:
 
-- The log of the `shizuku` run shows no dead latent and a zero auxiliary loss at every logged step, so AuxK was not exercised on real activations.
+- The log of the `topk` run shows no dead latent and a zero auxiliary loss at every logged step, so AuxK was not exercised on real activations.
 - Why half of the SAELens latents still never fired. The short budget is a candidate, as described for the SAELens backend above, but a longer run was not made.
 - A like-for-like comparison of the trainers. The columns differ in auxiliary loss, dead-latent bookkeeping, decoder scaling and initialisation.
 
@@ -227,5 +253,5 @@ Except for the trial above, all of this uses a randomly initialised two-layer BE
 - Formal et al., [SPLADE: Sparse Lexical and Expansion Model for First Stage Ranking](https://arxiv.org/abs/2107.05720), 2021. The retrieval model family whose vocabulary an SAE replaces.
 - [From Tokens to Concepts: Leveraging SAE for SPLADE](https://arxiv.org/abs/2604.21511) (SAE-SPLADE). Replaces the masked-language-model head of SPLADE with an SAE on an encoder.
 - [Learning Retrieval Models with Sparse Autoencoders](https://arxiv.org/abs/2603.13277) (SPLARE). Sparse retrieval with a frozen SAE on an LLM backbone.
-- mahiyama, [modernbert-ja-310m-sae](https://huggingface.co/mahiyama/modernbert-ja-310m-sae) and [sae-splade-ja-310m](https://huggingface.co/mahiyama/sae-splade-ja-310m) (Shizuku). The recipe followed by the `shizuku` trainer.
+- mahiyama, [modernbert-ja-310m-sae](https://huggingface.co/mahiyama/modernbert-ja-310m-sae) and [sae-splade-ja-310m](https://huggingface.co/mahiyama/sae-splade-ja-310m) (Shizuku). The recipe followed by the `topk` trainer.
 - [SAELens](https://pypi.org/project/sae-lens/). The second training backend.

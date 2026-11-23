@@ -35,7 +35,7 @@ Train an SAE on the final layer of ruri-v3 with the data it was fine-tuned on:
 
 ```bash
 muscari train-sae \
-  --trainer shizuku \
+  --trainer topk \
   --model cl-nagoya/ruri-v3-310m \
   --dataset cl-nagoya/ruri-v3-dataset-ft \
   --subsets auto-wiki-qa-nemotron jaquad jqara jsquad miracl mkqa mr-tydi quiz-no-mori quiz-works \
@@ -56,7 +56,7 @@ Any corpus works. A plain text file with one text per line provides the column `
 
 ```bash
 muscari train-sae \
-  --trainer shizuku \
+  --trainer topk \
   --model cl-nagoya/ruri-v3-310m \
   --data-files corpus.txt \
   --columns "text=検索文書: " \
@@ -76,8 +76,8 @@ Run `muscari train-sae --help` for every option. An offline example that needs n
 ```python
 from muscari import (
     EncoderActivationSource,
-    ShizukuTrainer,
-    ShizukuTrainerConfig,
+    TopKTrainer,
+    TopKTrainerConfig,
     TextColumn,
     iter_texts,
     load_sae,
@@ -99,12 +99,12 @@ batches = shuffled_batches(
     buffer_tokens=524_288,
 )
 
-config = ShizukuTrainerConfig(
+config = TopKTrainerConfig(
     num_latents=16_384,
     k=16,
     total_tokens=50_000_000,
 )
-trainer = ShizukuTrainer(config, d_in=source.d_in)
+trainer = TopKTrainer(config, d_in=source.d_in)
 sae = trainer.fit(batches, out_dir="runs/sae")
 save_topk_sae("runs/sae", sae, {"base_model": "cl-nagoya/ruri-v3-30m"})
 
@@ -120,13 +120,13 @@ features = exported.encode(hidden)  # (tokens, num_latents), k non-zero entries 
 | `sae.safetensors` | `encoder.weight (M, d)`, `encoder.bias (M)`, `decoder.weight (d, M)`, `decoder.bias (d)`, and `threshold (M)` for JumpReLU SAEs |
 | `sae_config.json` | sizes, activation rule, `k`, base model, layer, dataset, columns and prefixes, holdout percentage, trainer, tokens trained |
 | `metrics.json` | held-out evaluation after training |
-| `train_log.jsonl`, `trainer_config.json`, `checkpoint.pt` | `shizuku` trainer only |
+| `train_log.jsonl`, `trainer_config.json`, `checkpoint.pt` | `topk` trainer only |
 
 The decoder bias is folded into the encoder bias, so encoding is one affine map: `pre = x @ encoder.weight.T + encoder.bias`, then keep the `k` largest values per token after ReLU. Local paths are recorded by file name only.
 
 ## The two trainers
 
-| | `shizuku` | `saelens` |
+| | `topk` | `saelens` |
 | --- | --- | --- |
 | Implementation | this repository | [SAELens](https://pypi.org/project/sae-lens/) `SAETrainer` (optional extra) |
 | Architectures | Top-K | Top-K, BatchTopK (exported as JumpReLU) |
@@ -137,7 +137,7 @@ The decoder bias is folded into the encoder bias, so encoding is one affine map:
 | Checkpoint and resume | yes (`--checkpoint-every`, `--resume`) | no |
 | Logging | JSON lines | SAELens, optionally Weights & Biases |
 
-`shizuku` is an independent implementation of the recipe described on the model card of the SAE behind mahiyama's [Shizuku](https://huggingface.co/mahiyama/sae-splade-ja-310m) models. Their training code is not public and this project is not affiliated with them. The details and the differences from Gao et al. are in the [design guide](docs/design.md).
+`topk` is this repository's own loop. Its mechanics follow Gao et al., and its default hyperparameters are the ones stated on the model card of the SAE behind mahiyama's [Shizuku](https://huggingface.co/mahiyama/sae-splade-ja-310m) models. The training code of those models is not public and this project is not affiliated with them. What the card states, what it leaves open and how to run with its settings are in the [design guide](docs/design.md#running-with-the-settings-of-the-shizuku-sae-card).
 
 ## Evaluation
 
@@ -181,7 +181,7 @@ Not run yet: CUDA (including bfloat16 autocast on CUDA), a full-size run of 65,5
 ## Acknowledgements
 
 - Gao et al., [Scaling and evaluating sparse autoencoders](https://arxiv.org/abs/2406.04093): Top-K SAEs, AuxK, the initialisation. Their [reference implementation](https://github.com/openai/sparse_autoencoder) was read to check details and motivated the sparse backward pass.
-- mahiyama's [Shizuku](https://huggingface.co/mahiyama/sae-splade-ja-310m) models and the [SAE model card](https://huggingface.co/mahiyama/modernbert-ja-310m-sae) whose recipe the `shizuku` trainer follows.
+- mahiyama's [Shizuku](https://huggingface.co/mahiyama/sae-splade-ja-310m) models and the [SAE model card](https://huggingface.co/mahiyama/modernbert-ja-310m-sae) whose recipe the `topk` trainer follows.
 - [From Tokens to Concepts: Leveraging SAE for SPLADE](https://arxiv.org/abs/2604.21511) (SAE-SPLADE) and [Learning Retrieval Models with Sparse Autoencoders](https://arxiv.org/abs/2603.13277) (SPLARE) for the retrieval setting this tool serves.
 - [SAELens](https://pypi.org/project/sae-lens/) for the second training backend.
 - [ruri-v3](https://huggingface.co/cl-nagoya/ruri-v3-310m) and its [fine-tuning dataset](https://huggingface.co/datasets/cl-nagoya/ruri-v3-dataset-ft), used as the running example.

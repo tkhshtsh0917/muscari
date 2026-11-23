@@ -30,7 +30,7 @@ run = "uv run --frozen --no-sync pytest -q"
 [tasks.smoke]
 description = "Train a tiny offline SAE with both trainers"
 run = [
-  "uv run --frozen --no-sync python examples/train_tiny.py --trainer shizuku",
+  "uv run --frozen --no-sync python examples/train_tiny.py --trainer topk",
   "uv run --frozen --no-sync python examples/train_tiny.py --trainer saelens",
 ]
 

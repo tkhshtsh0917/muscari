@@ -1,4 +1,4 @@
-"""ShizukuTrainer: schedule, learning, dead-latent bookkeeping and exact resumption."""
+"""TopKTrainer: schedule, learning, dead-latent bookkeeping and exact resumption."""
 
 from __future__ import annotations
 
@@ -9,12 +9,12 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from muscari import ShizukuTrainer, ShizukuTrainerConfig
+from muscari import TopKTrainer, TopKTrainerConfig
 from muscari.trainers import warmup_cosine
-from muscari.trainers.shizuku import CHECKPOINT_NAME
+from muscari.trainers.topk import CHECKPOINT_NAME
 
 
-def small_config(**overrides) -> ShizukuTrainerConfig:
+def small_config(**overrides) -> TopKTrainerConfig:
     arguments = {
         "num_latents": 64,
         "k": 2,
@@ -26,7 +26,7 @@ def small_config(**overrides) -> ShizukuTrainerConfig:
         "device": "cpu",
     }
     arguments.update(overrides)
-    return ShizukuTrainerConfig(**arguments)
+    return TopKTrainerConfig(**arguments)
 
 
 def sparse_dictionary_batches(
@@ -57,7 +57,7 @@ def test_schedule_warms_up_linearly_then_decays_to_zero():
 
 def test_training_recovers_structure_in_sparse_data():
     cfg = small_config(total_tokens=256 * 1000, lr=3e-3)
-    trainer = ShizukuTrainer(cfg, d_in=16)
+    trainer = TopKTrainer(cfg, d_in=16)
     held_out = sparse_dictionary_batches(1, seed=1)[0]
 
     def fvu() -> float:
@@ -77,7 +77,7 @@ def test_training_recovers_structure_in_sparse_data():
 
 def test_learning_rate_follows_the_schedule():
     cfg = small_config(lr=1e-3, warmup_frac=0.1)
-    trainer = ShizukuTrainer(cfg, d_in=16)
+    trainer = TopKTrainer(cfg, d_in=16)
     rates = [trainer.train_step(batch)["lr"] for batch in sparse_dictionary_batches(cfg.total_steps)]
 
     assert rates[:4] == pytest.approx([0.25e-3, 0.5e-3, 0.75e-3, 1e-3])
@@ -87,7 +87,7 @@ def test_learning_rate_follows_the_schedule():
 
 def test_latents_die_after_the_token_window():
     cfg = small_config(num_latents=512, dead_after_tokens=300, aux_k=0)
-    trainer = ShizukuTrainer(cfg, d_in=16)
+    trainer = TopKTrainer(cfg, d_in=16)
     batches = sparse_dictionary_batches(3)
 
     trainer.train_step(batches[0])
@@ -105,7 +105,7 @@ def test_latents_die_after_the_token_window():
 
 def test_a_selected_latent_with_zero_activation_does_not_count_as_firing():
     cfg = small_config(num_latents=4, k=4, aux_k=0)
-    trainer = ShizukuTrainer(cfg, d_in=16)
+    trainer = TopKTrainer(cfg, d_in=16)
     with torch.no_grad():
         trainer.sae.encoder.bias[0] = -1e6  # always selected because k == num_latents, never positive
 
@@ -117,7 +117,7 @@ def test_a_selected_latent_with_zero_activation_does_not_count_as_firing():
 
 def test_auxiliary_loss_is_active_once_latents_are_dead():
     cfg = small_config(dead_after_tokens=256, total_tokens=256 * 10)
-    trainer = ShizukuTrainer(cfg, d_in=16)
+    trainer = TopKTrainer(cfg, d_in=16)
     metrics = [trainer.train_step(batch) for batch in sparse_dictionary_batches(10)]
 
     assert metrics[0]["aux"] == 0.0
@@ -128,14 +128,14 @@ def test_resuming_from_a_checkpoint_continues_exactly(tmp_path):
     cfg = small_config()
     batches = sparse_dictionary_batches(cfg.total_steps)
 
-    uninterrupted = ShizukuTrainer(cfg, d_in=16)
+    uninterrupted = TopKTrainer(cfg, d_in=16)
     uninterrupted.fit(batches)
 
-    first_half = ShizukuTrainer(cfg, d_in=16)
+    first_half = TopKTrainer(cfg, d_in=16)
     first_half.fit(batches[:20])
     first_half.save_checkpoint(tmp_path / CHECKPOINT_NAME, data={"texts_seen": 123})
 
-    resumed = ShizukuTrainer(small_config(seed=99), d_in=16)  # a different initialisation
+    resumed = TopKTrainer(small_config(seed=99), d_in=16)  # a different initialisation
     data_state = resumed.load_checkpoint(tmp_path / CHECKPOINT_NAME)
     resumed.fit(batches[20:])
 
@@ -148,7 +148,7 @@ def test_resuming_from_a_checkpoint_continues_exactly(tmp_path):
 
 def test_fit_writes_logs_config_and_periodic_checkpoints(tmp_path):
     cfg = small_config(checkpoint_every=15)
-    trainer = ShizukuTrainer(cfg, d_in=16)
+    trainer = TopKTrainer(cfg, d_in=16)
     seen = []
 
     trainer.fit(
@@ -170,7 +170,7 @@ def test_fit_writes_logs_config_and_periodic_checkpoints(tmp_path):
 
 
 def test_a_completed_run_does_not_consume_batches():
-    trainer = ShizukuTrainer(small_config(), d_in=16)
+    trainer = TopKTrainer(small_config(), d_in=16)
     trainer.fit(sparse_dictionary_batches(40))
 
     def fail():
@@ -183,7 +183,7 @@ def test_a_completed_run_does_not_consume_batches():
 
 
 def test_fit_stops_early_when_the_batches_run_out():
-    trainer = ShizukuTrainer(small_config(), d_in=16)
+    trainer = TopKTrainer(small_config(), d_in=16)
     trainer.fit(sparse_dictionary_batches(7))
 
     assert trainer.step == 7
@@ -194,16 +194,16 @@ def test_fit_stops_early_when_the_batches_run_out():
     [({"num_latents": 128}, 16), ({"k": 3}, 16), ({"batch_tokens": 128}, 16), ({}, 8)],
 )
 def test_a_checkpoint_from_a_different_shape_is_refused(tmp_path, overrides, d_in):
-    ShizukuTrainer(small_config(), d_in=16).save_checkpoint(tmp_path / CHECKPOINT_NAME)
+    TopKTrainer(small_config(), d_in=16).save_checkpoint(tmp_path / CHECKPOINT_NAME)
 
     with pytest.raises(ValueError, match="does not match"):
-        ShizukuTrainer(small_config(**overrides), d_in=d_in).load_checkpoint(tmp_path / CHECKPOINT_NAME)
+        TopKTrainer(small_config(**overrides), d_in=d_in).load_checkpoint(tmp_path / CHECKPOINT_NAME)
 
 
 def test_training_length_may_be_extended_on_resume(tmp_path):
-    ShizukuTrainer(small_config(), d_in=16).save_checkpoint(tmp_path / CHECKPOINT_NAME)
+    TopKTrainer(small_config(), d_in=16).save_checkpoint(tmp_path / CHECKPOINT_NAME)
 
-    ShizukuTrainer(small_config(total_tokens=256 * 80), d_in=16).load_checkpoint(tmp_path / CHECKPOINT_NAME)
+    TopKTrainer(small_config(total_tokens=256 * 80), d_in=16).load_checkpoint(tmp_path / CHECKPOINT_NAME)
 
 
 @pytest.mark.parametrize(

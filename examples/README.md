@@ -7,9 +7,9 @@
 `train_tiny.py` builds a two-layer BERT with random weights and a few hundred synthetic query/passage rows in a temporary directory, runs `muscari train-sae` on them and then evaluates the exported SAE with `muscari eval-sae`. It downloads nothing and finishes in seconds on a CPU.
 
 ```bash
-python examples/train_tiny.py --trainer shizuku
+python examples/train_tiny.py --trainer topk
 python examples/train_tiny.py --trainer saelens    # needs the "saelens" extra
-python examples/train_tiny.py --trainer shizuku --workdir runs/tiny    # keep the files
+python examples/train_tiny.py --trainer topk --workdir runs/tiny    # keep the files
 ```
 
 From a development checkout, `mise run smoke` runs both trainers.
@@ -22,7 +22,7 @@ The ruri-v3 recipe is in the [README](../README.md#quickstart). For a first run,
 
 ```bash
 muscari train-sae \
-  --trainer shizuku \
+  --trainer topk \
   --model cl-nagoya/ruri-v3-30m \
   --dataset cl-nagoya/ruri-v3-dataset-ft \
   --subsets jsquad \

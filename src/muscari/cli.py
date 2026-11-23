@@ -73,7 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="train an SAE on an encoder's token activations",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    train.add_argument("--trainer", choices=["shizuku", "saelens"], required=True)
+    train.add_argument("--trainer", choices=["topk", "saelens"], required=True)
     train.add_argument("--out", required=True, help="output directory")
     _add_encoder_arguments(train, for_training=True)
     _add_data_arguments(train, for_training=True)
@@ -91,7 +91,7 @@ def build_parser() -> argparse.ArgumentParser:
     group.add_argument("--dead-after-tokens", type=int, default=10_000_000)
     group.add_argument("--amp", action="store_true", help="bf16 autocast for the SAE (CUDA)")
 
-    group = train.add_argument_group("shizuku trainer")
+    group = train.add_argument_group("topk trainer")
     group.add_argument("--aux-k", type=int, default=256)
     group.add_argument("--aux-coef", type=float, default=1 / 32)
     group.add_argument("--adam-eps", type=float, default=1e-8)
@@ -185,8 +185,8 @@ def train_sae(args: argparse.Namespace) -> dict[str, Any]:
     """Run the ``train-sae`` subcommand and return the final metrics."""
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    if args.resume and args.trainer != "shizuku":
-        raise SystemExit("--resume is only supported by the shizuku trainer.")
+    if args.resume and args.trainer != "topk":
+        raise SystemExit("--resume is only supported by the topk trainer.")
 
     device = resolve_device(args.device)
     columns = [TextColumn.parse(spec) for spec in args.columns]
@@ -237,10 +237,10 @@ def train_sae(args: argparse.Namespace) -> dict[str, Any]:
         "seed": args.seed,
     }
 
-    if args.trainer == "shizuku":
-        from .trainers.shizuku import CHECKPOINT_NAME, ShizukuTrainer, ShizukuTrainerConfig
+    if args.trainer == "topk":
+        from .trainers.topk import CHECKPOINT_NAME, TopKTrainer, TopKTrainerConfig
 
-        shizuku_config = ShizukuTrainerConfig(
+        topk_config = TopKTrainerConfig(
             num_latents=args.num_latents,
             k=args.k,
             aux_k=args.aux_k,
@@ -257,7 +257,7 @@ def train_sae(args: argparse.Namespace) -> dict[str, Any]:
             seed=args.seed,
             device=str(device),
         )
-        trainer = ShizukuTrainer(shizuku_config, source.d_in)
+        trainer = TopKTrainer(topk_config, source.d_in)
 
         train_texts: Iterator[tuple[str, str]] = repeat_texts(lambda: texts("train"))
         skipped_texts = 0
@@ -290,7 +290,7 @@ def train_sae(args: argparse.Namespace) -> dict[str, Any]:
             sae,
             {
                 **provenance,
-                "trainer": "shizuku",
+                "trainer": "topk",
                 "tokens_trained": trainer.tokens_seen,
             },
         )

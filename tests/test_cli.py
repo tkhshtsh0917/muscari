@@ -15,7 +15,7 @@ from muscari.cli import load_rows, main
 COLUMN_SPECS = [f"anc={QUERY_PREFIX}", f"pos={DOC_PREFIX}", f"neg={DOC_PREFIX}"]
 
 
-def train_arguments(model: Path, data: Path, out: Path, *, trainer: str = "shizuku") -> list[str]:
+def train_arguments(model: Path, data: Path, out: Path, *, trainer: str = "topk") -> list[str]:
     return [
         "train-sae",
         *("--trainer", trainer),
@@ -57,7 +57,7 @@ def test_training_writes_an_evaluated_sae_with_provenance(tiny_model_dir, data_f
     assert metrics["tokens_encoded"] >= 20_000
 
     config = read_json(out / "sae_config.json")
-    assert config["trainer"] == "shizuku" and config["tokens_trained"] == 156 * 128
+    assert config["trainer"] == "topk" and config["tokens_trained"] == 156 * 128
     assert (config["num_latents"], config["k"], config["d_in"]) == (128, 4, 32)
     assert config["columns"] == {"anc": QUERY_PREFIX, "pos": DOC_PREFIX, "neg": DOC_PREFIX}
     assert config["layer"] == "last_hidden_state" and config["prefix_tokens_excluded"] is True
@@ -108,7 +108,7 @@ def test_resume_without_a_checkpoint_is_refused(tiny_model_dir, data_file, tmp_p
 def test_resume_is_refused_for_the_saelens_trainer(tiny_model_dir, data_file, tmp_path):
     arguments = train_arguments(tiny_model_dir, data_file, tmp_path / "run", trainer="saelens")
 
-    with pytest.raises(SystemExit, match="only supported by the shizuku trainer"):
+    with pytest.raises(SystemExit, match="only supported by the topk trainer"):
         main([*arguments, "--resume"])
 
 
@@ -221,6 +221,6 @@ def test_unusable_data_files_are_rejected(data_file, tmp_path):
 
 def test_missing_required_arguments_exit_with_usage(capsys):
     with pytest.raises(SystemExit):
-        main(["train-sae", "--trainer", "shizuku", "--out", "x"])
+        main(["train-sae", "--trainer", "topk", "--out", "x"])
 
     assert "--model" in capsys.readouterr().err
