@@ -27,7 +27,7 @@ def signed_identity_sae(tmp_path, d_in: int = 4, **overrides):
 
 
 def test_exported_topk_sae_reproduces_the_trained_module(tmp_path):
-    torch.manual_seed(0)
+    torch.manual_seed(42)
     sae = TopKSAE(12, 40, 5)
     with torch.no_grad():
         sae.b_dec.normal_()
@@ -44,7 +44,7 @@ def test_exported_topk_sae_reproduces_the_trained_module(tmp_path):
 
 
 def test_file_layout_folds_b_dec_into_the_encoder_bias(tmp_path):
-    torch.manual_seed(0)
+    torch.manual_seed(42)
     sae = TopKSAE(6, 10, 2)
     with torch.no_grad():
         sae.b_dec.normal_()
@@ -64,7 +64,7 @@ def test_file_layout_folds_b_dec_into_the_encoder_bias(tmp_path):
 
 
 def test_config_keeps_non_ascii_provenance_readable(tmp_path):
-    torch.manual_seed(0)
+    torch.manual_seed(42)
     save_topk_sae(tmp_path, TopKSAE(4, 8, 2), {"columns": {"anc": "検索クエリ: "}})
 
     assert "検索クエリ: " in (tmp_path / CONFIG_NAME).read_text(encoding="utf-8")
@@ -72,7 +72,7 @@ def test_config_keeps_non_ascii_provenance_readable(tmp_path):
 
 def test_evaluation_of_an_exact_sae(tmp_path):
     sae = signed_identity_sae(tmp_path)
-    torch.manual_seed(0)
+    torch.manual_seed(42)
     activations = torch.randn(1000, 4)
     activations[:, 0] = activations[:, 0].abs() + 0.1  # dimension 0 is always positive
 

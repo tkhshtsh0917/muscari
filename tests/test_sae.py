@@ -12,7 +12,7 @@ from muscari.sae import _SparseDecode, _SparseEncode
 
 
 def make_sae(*, d_in: int = 12, num_latents: int = 40, k: int = 5) -> TopKSAE:
-    torch.manual_seed(0)
+    torch.manual_seed(42)
     sae = TopKSAE(d_in, num_latents, k)
     with torch.no_grad():
         sae.b_dec.normal_()
@@ -102,7 +102,7 @@ def test_gradients_are_independent_of_the_chunk_size(monkeypatch):
 
 
 def test_sparse_encode_passes_a_numerical_gradient_check(monkeypatch):
-    torch.manual_seed(0)
+    torch.manual_seed(42)
     x = torch.randn(6, 5, dtype=torch.double, requires_grad=True)
     weight = torch.randn(11, 5, dtype=torch.double, requires_grad=True)
     bias = torch.randn(11, dtype=torch.double, requires_grad=True)
@@ -120,7 +120,7 @@ def test_sparse_encode_passes_a_numerical_gradient_check(monkeypatch):
 
 
 def test_sparse_decode_passes_a_numerical_gradient_check():
-    torch.manual_seed(0)
+    torch.manual_seed(42)
     values = torch.rand(7, 4, dtype=torch.double, requires_grad=True)
     indices = torch.randint(10, (7, 4))
     indices[0] = 3  # a row that selects the same latent several times
@@ -168,7 +168,7 @@ def test_loss_runs_under_bfloat16_autocast():
 
 
 def test_initialisation_is_tied_unit_norm_and_scale_calibrated():
-    torch.manual_seed(0)
+    torch.manual_seed(42)
     sae = TopKSAE(64, 512, 8)
 
     assert torch.allclose(sae.decoder.norm(dim=-1), torch.ones(512), atol=1e-6)
@@ -199,7 +199,7 @@ def test_geometric_median_is_the_center_of_symmetric_points():
 
 
 def test_geometric_median_resists_an_outlier_that_moves_the_mean():
-    torch.manual_seed(0)
+    torch.manual_seed(42)
     points = torch.randn(200, 4)
     points[0] = 1e4
 

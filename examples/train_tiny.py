@@ -48,7 +48,7 @@ def build_encoder(path: Path) -> Path:
         sep_token="[SEP]",
     ).save_pretrained(path)
 
-    torch.manual_seed(0)
+    torch.manual_seed(42)
     config = BertConfig(
         vocab_size=len(vocab),
         hidden_size=32,
@@ -63,7 +63,7 @@ def build_encoder(path: Path) -> Path:
 
 def write_rows(path: Path, n_rows: int = 300) -> Path:
     """Write rows with a query, a positive passage and two negative passages each."""
-    generator = torch.Generator().manual_seed(0)
+    generator = torch.Generator().manual_seed(42)
 
     def sentence(length: int) -> str:
         ids = torch.randint(len(WORDS), (length,), generator=generator)

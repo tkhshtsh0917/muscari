@@ -68,7 +68,7 @@ def test_export_matches_the_native_inference_model(source, tmp_path, monkeypatch
     assert evaluate_sae(exported, held_out)["fvu"] < 1.0
 
 
-def offset_batches(n_batches: int, *, batch: int = 512, d_in: int = 32, seed: int = 0) -> list[torch.Tensor]:
+def offset_batches(n_batches: int, *, batch: int = 512, d_in: int = 32, seed: int = 42) -> list[torch.Tensor]:
     """Sparse combinations of fixed directions on top of a common component six times larger."""
     fixed = torch.Generator().manual_seed(1234)
     dictionary = torch.nn.functional.normalize(torch.randn(128, d_in, generator=fixed), dim=-1)

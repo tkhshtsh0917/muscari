@@ -56,7 +56,7 @@ def _add_data_arguments(parser: argparse.ArgumentParser, *, for_training: bool) 
         help="columns to read, as name or name=prefix; .txt files provide the column 'text'",
     )
     group.add_argument("--min-chars", type=int, default=1, help="skip texts shorter than this")
-    group.add_argument("--seed", type=int, default=0, help="seed for row order, shuffling and initialisation")
+    group.add_argument("--seed", type=int, default=42, help="seed for row order, shuffling and initialisation")
 
 
 def build_parser() -> argparse.ArgumentParser:

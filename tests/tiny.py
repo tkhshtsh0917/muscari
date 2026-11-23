@@ -23,7 +23,7 @@ HIDDEN_SIZE = 32
 MAX_POSITIONS = 64
 
 
-def make_rows(n: int, seed: int = 0) -> list[dict[str, object]]:
+def make_rows(n: int, seed: int = 42) -> list[dict[str, object]]:
     """Rows shaped like a retrieval dataset: a query, a positive and a list of negatives."""
     generator = torch.Generator().manual_seed(seed)
 
@@ -62,7 +62,7 @@ def build_tiny_encoder(path: Path) -> Path:
         sep_token="[SEP]",
     )
 
-    torch.manual_seed(0)
+    torch.manual_seed(42)
     config = BertConfig(
         vocab_size=len(vocab),
         hidden_size=HIDDEN_SIZE,

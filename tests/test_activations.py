@@ -118,7 +118,7 @@ def numbered_stream(n_chunks: int, rows: int) -> list[torch.Tensor]:
 
 
 def test_shuffled_batches_emit_every_row_once_in_full_batches():
-    batches = list(shuffled_batches(numbered_stream(40, 10), batch_tokens=16, buffer_tokens=64, seed=0))
+    batches = list(shuffled_batches(numbered_stream(40, 10), batch_tokens=16, buffer_tokens=64, seed=42))
     values = torch.cat(batches).flatten()
 
     assert all(batch.shape == (16, 1) for batch in batches)
@@ -127,7 +127,7 @@ def test_shuffled_batches_emit_every_row_once_in_full_batches():
 
 
 def test_shuffled_batches_drop_only_the_final_partial_batch():
-    batches = list(shuffled_batches(numbered_stream(7, 10), batch_tokens=16, buffer_tokens=32, seed=0))
+    batches = list(shuffled_batches(numbered_stream(7, 10), batch_tokens=16, buffer_tokens=32, seed=42))
     values = torch.cat(batches).flatten()
 
     assert values.numel() == 64  # 70 rows, four full batches
@@ -135,7 +135,7 @@ def test_shuffled_batches_drop_only_the_final_partial_batch():
 
 
 def test_shuffled_batches_mix_rows_from_different_chunks():
-    first = next(iter(shuffled_batches(numbered_stream(40, 10), batch_tokens=16, buffer_tokens=64, seed=0)))
+    first = next(iter(shuffled_batches(numbered_stream(40, 10), batch_tokens=16, buffer_tokens=64, seed=42)))
     source_chunks = (first.flatten() // 10).unique()
 
     assert source_chunks.numel() > 2
@@ -150,7 +150,7 @@ def test_shuffled_batches_are_reproducible_per_seed():
 
 
 def test_emitted_batches_do_not_alias_the_buffer():
-    iterator = shuffled_batches(numbered_stream(40, 10), batch_tokens=16, buffer_tokens=64, seed=0)
+    iterator = shuffled_batches(numbered_stream(40, 10), batch_tokens=16, buffer_tokens=64, seed=42)
     first = next(iterator)
     snapshot = first.clone()
     list(iterator)  # refills and compacts the buffer many times
@@ -160,7 +160,7 @@ def test_emitted_batches_do_not_alias_the_buffer():
 
 def test_a_chunk_larger_than_the_buffer_is_consumed_completely():
     stream = [torch.arange(1000).float().unsqueeze(1)]
-    values = torch.cat(list(shuffled_batches(stream, batch_tokens=10, buffer_tokens=40, seed=0))).flatten()
+    values = torch.cat(list(shuffled_batches(stream, batch_tokens=10, buffer_tokens=40, seed=42))).flatten()
 
     assert values.numel() == 1000
     assert values.unique().numel() == 1000

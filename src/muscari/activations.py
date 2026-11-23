@@ -212,7 +212,7 @@ def shuffled_batches(
     *,
     batch_tokens: int,
     buffer_tokens: int,
-    seed: int = 0,
+    seed: int = 42,
 ) -> Iterator[torch.Tensor]:
     """Mix activations from many documents and emit batches of exactly ``batch_tokens`` rows.
 

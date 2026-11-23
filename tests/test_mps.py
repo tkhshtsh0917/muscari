@@ -26,7 +26,7 @@ def test_loss_and_gradients_match_the_cpu():
     results = {}
 
     for device in ("cpu", "mps"):
-        torch.manual_seed(0)
+        torch.manual_seed(42)
         sae = TopKSAE(24, 512, 8).to(device)
         out = sae.loss(x.to(device), dead_mask=dead.to(device), aux_k=32)
         (out["fvu"] + out["aux"]).backward()
@@ -54,7 +54,7 @@ def test_trainer_learns_on_mps():
         device="mps",
     )
     trainer = ShizukuTrainer(cfg, d_in=24)
-    generator = torch.Generator().manual_seed(0)
+    generator = torch.Generator().manual_seed(42)
     directions = torch.nn.functional.normalize(torch.randn(64, 24, generator=generator), dim=-1)
 
     def batch() -> torch.Tensor:

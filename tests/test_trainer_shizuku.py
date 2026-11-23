@@ -29,7 +29,9 @@ def small_config(**overrides) -> ShizukuTrainerConfig:
     return ShizukuTrainerConfig(**arguments)
 
 
-def sparse_dictionary_batches(n_batches: int, *, batch: int = 256, d_in: int = 16, seed: int = 0) -> list[torch.Tensor]:
+def sparse_dictionary_batches(
+    n_batches: int, *, batch: int = 256, d_in: int = 16, seed: int = 42
+) -> list[torch.Tensor]:
     """Activations that are sums of two out of 32 fixed directions with positive weights."""
     dictionary = F.normalize(torch.randn(32, d_in, generator=torch.Generator().manual_seed(1234)), dim=-1)
     generator = torch.Generator().manual_seed(seed)

@@ -70,7 +70,7 @@ class ShizukuTrainerConfig:
     amp: bool = False
     log_every: int = 100
     checkpoint_every: int = 0
-    seed: int = 0
+    seed: int = 42
     device: str = "auto"
 
     def __post_init__(self) -> None:

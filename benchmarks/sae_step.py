@@ -61,7 +61,7 @@ def peak_memory_gb(device: torch.device) -> float:
 
 def run(args: argparse.Namespace) -> dict[str, object]:
     device = resolve_device(args.device)
-    torch.manual_seed(0)
+    torch.manual_seed(42)
 
     sae = TopKSAE(args.d_in, args.num_latents, args.k).to(device)
     optimizer = torch.optim.Adam(sae.parameters(), lr=1e-4)
