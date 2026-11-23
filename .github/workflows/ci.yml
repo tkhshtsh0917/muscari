@@ -1,0 +1,51 @@
+name: checks
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5
+        with:
+          version: "2026.11.8"
+      - run: mise run setup
+      - run: mise run check
+  compatibility:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: "3.11"
+            extras: "."
+            constraints: "torch==2.6.0 transformers==4.48.0 datasets==3.0.0 safetensors==0.4.4"
+          - python: "3.13"
+            extras: ".[saelens]"
+            constraints: ""
+    env:
+      OMP_NUM_THREADS: "1"
+      HF_HUB_OFFLINE: "1"
+      TOKENIZERS_PARALLELISM: "false"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5
+        with:
+          version: "2026.11.8"
+      - name: Resolve compatibility environment explicitly
+        run: |
+          uv venv --python '${{ matrix.python }}'
+          uv pip install --python .venv/bin/python --torch-backend=cpu --group dev '${{ matrix.extras }}' ${{ matrix.constraints }}
+          uv pip freeze --python .venv/bin/python
+      - run: .venv/bin/pytest -q
