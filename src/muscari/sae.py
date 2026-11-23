@@ -27,15 +27,17 @@ from torch import nn
 _CHUNK_ELEMENTS = 1 << 25
 
 # The auxiliary reconstruction touches ``aux_k`` latents per token, far more than ``k``. A
-# gather moves data much more slowly than a matrix product multiplies it, so while the dead
-# latents number at most this multiple of ``aux_k`` the auxiliary path uses dense products
-# restricted to the dead columns. Beyond that it falls back to gathers, whose cost does not
-# grow with the number of dead latents. Both give the same result.
+# gather moves data much more slowly than a matrix product multiplies it, so the auxiliary
+# path prefers dense products restricted to the dead columns. On CUDA it always does: measured
+# on an L4, the dense form was faster up to 90% dead latents at the same peak memory. Elsewhere
+# it does so while the dead latents number at most this multiple of ``aux_k``; beyond that it
+# falls back to gathers, whose time and memory do not grow with the number of dead latents (on
+# a 7 GB CPU machine the dense form ran out of memory at 90% dead). Both give the same result.
 _DENSE_AUX_RATIO = 64
 
 
-def _use_dense_aux(n_dead: int, aux_k: int) -> bool:
-    return n_dead <= _DENSE_AUX_RATIO * aux_k
+def _use_dense_aux(n_dead: int, aux_k: int, device: torch.device) -> bool:
+    return device.type == "cuda" or n_dead <= _DENSE_AUX_RATIO * aux_k
 
 
 def normalized_mse(recon: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
@@ -183,7 +185,7 @@ class _SparseEncode(torch.autograd.Function):
 
         if grad_aux_values is not None and aux_indices.shape[1] > 0:
             grads = grad_aux_values.to(weight.dtype)
-            if _use_dense_aux(dead_index.numel(), aux_indices.shape[1]):
+            if _use_dense_aux(dead_index.numel(), aux_indices.shape[1], weight.device):
                 dense = grads.new_zeros((x.shape[0], dead_index.numel())).scatter_(1, ctx.aux_local, grads)
                 grad_bias.index_add_(0, dead_index, dense.sum(dim=0))
                 if grad_weight is not None:
@@ -349,7 +351,7 @@ class TopKSAE(nn.Module):
         dead_index: torch.Tensor,
     ) -> torch.Tensor:
         """Reconstruction from the selected dead latents, without the decoder bias."""
-        if not _use_dense_aux(dead_index.numel(), aux_indices.shape[1]):
+        if not _use_dense_aux(dead_index.numel(), aux_indices.shape[1], self.decoder.device):
             return self.decode_sparse(aux_values, aux_indices, add_bias=False)
 
         # Position of every dead latent inside ``dead_index``; other entries are never read.
