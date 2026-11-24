@@ -275,7 +275,7 @@ The probe measures ranking with nothing trained. No metric here measures the qua
 | --- | --- | --- |
 | GitHub Actions, Ubuntu 24.04 | the locked `mise run check` on Python 3.12; the tests with the lowest supported versions on Python 3.11 (PyTorch 2.6, Transformers 4.48, Datasets 3.0, safetensors 0.4.4); the tests with the newest versions and SAELens on Python 3.13 | passed |
 | macOS 26.6, Apple M5 Pro, Python 3.12, PyTorch 2.15 | `mise run check`, including the hardware tests on MPS and Betterleaks | passed |
-| The same Mac, MPS | runs of 5 to 30 million tokens on `cl-nagoya/ruri-v3-30m` with both trainers, and the step benchmark | ran end to end; numbers in the [design guide](docs/design.md#trial-on-a-real-encoder) |
+| The same Mac, MPS | runs of 5 to 30 million tokens on `cl-nagoya/ruri-v3-30m` with both trainers, their per-text and per-latent statistics, and the step benchmark | ran end to end; numbers in the [design guide](docs/design.md#trial-on-a-real-encoder) |
 | Google Colab, NVIDIA L4, Python 3.13, PyTorch 2.14 | the tests; loss and gradients on CUDA against the CPU; bfloat16 autocast; the step benchmark; a 5-million-token run in float32 and bfloat16 | passed; numbers in the design guide |
 | Linux x86_64 CPU, Python 3.13, PyTorch 2.15 | formatting, lint, mypy, tests, package build, public-content audit, step benchmark | passed |
 

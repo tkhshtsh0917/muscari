@@ -309,8 +309,40 @@ The same setting on the nine retrieval subsets of the dataset (`auto-wiki-qa-nem
 - The unused latents of the SAELens backend were a matter of training length. With enough tokens the two trainers reach the same FVU; in short runs the `topk` trainer is ahead, and every one of its latents fired at every length.
 - FVU was still falling at 30 million tokens, by less each time the length doubled.
 - No latent of the `topk` runs was ever flagged dead, so AuxK was not exercised at this size (width 256, 8,192 latents).
-- In the longer runs of both trainers one latent fires on about 14% of the tokens. What it responds to has not been examined.
+- In the longer runs of both trainers one latent fires on about 14% of the tokens. It is examined [below](#what-the-latents-respond-to).
 - Throughput halved from the fourth run on, from about 43,000 to about 23,000 tokens per second, across separate processes. The cause was not isolated; these runs did not record encoder and SAE time separately.
+
+### After pooling
+
+The eight SAEs of the previous section, measured per text with `eval-sae` on one million held-out tokens: 5,472 documents of 181 content tokens on average and 657 queries of 17.
+
+| Training tokens | Trainer | Active latents per document | Active latents per query | Latents active in more than 10% of the documents | FLOPS, query and document |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 5 million | `topk` | 742 | 146 | 23.7% | 20.1 |
+| 5 million | `saelens` | 309 | 90 | 9.5% | 37.4 |
+| 10 million | `topk` | 682 | 135 | 17.0% | 21.4 |
+| 10 million | `saelens` | 469 | 109 | 16.2% | 30.1 |
+| 20 million | `topk` | 643 | 128 | 17.8% | 21.7 |
+| 20 million | `saelens` | 603 | 123 | 18.0% | 22.2 |
+| 30 million | `topk` | 643 | 126 | 18.9% | 20.2 |
+| 30 million | `saelens` | 631 | 124 | 19.7% | 19.5 |
+
+- A document activates about 640 of the 8,192 latents and a query about 125. A document has 181 tokens with 16 latents each, 2,890 slots in all, so most slots repeat a latent that another token of the same text already uses.
+- Nearly a fifth of the dictionary is active in more than one document in ten, and the most widespread latent is active in 99% of the documents.
+- The short SAELens runs activate fewer latents per text only because half of their dictionary was unused. Their FLOPS is higher, since the texts crowd onto the latents that are in use.
+- This is a small dictionary on a small encoder, before any retrieval training. For scale: the Japanese SPLADE models in [this report](https://secon.dev/entry/2024/10/23/080000-japanese-splade-tech-report/) have 14 to 28 active dimensions per query and 73 to 146 per document after training with a sparsity regulariser.
+
+### What the latents respond to
+
+`inspect-sae` on the same texts, for the 30-million-token SAEs.
+
+**The most frequent latent carries the common component, not content.** In the `topk` run it fires on 13.7% of the tokens and in 92% of the texts. No token accounts for more than 2.3% of its firings, its firings sit anywhere in a text (mean relative position 0.48), and it fires on 13.8% of the document tokens against 7.4% of the query tokens. Computed from the exported tensors, its decoder direction has a cosine of -0.92 with the decoder bias. That is the largest absolute value among all latents, whose median is 0.10. The latent therefore takes back part of the decoder bias on tokens that carry less of the common component than the bias assumes. The SAELens run learned the same latent (13.7% of the tokens, cosine -0.93). The `topk` run at 10 million tokens has none: its largest absolute cosine with the decoder bias is 0.59. This is the latent behind the 14% in the table of the previous section.
+
+**Few latents are vocabulary entries.** In 86 of the 8,192 latents of the `topk` run, and 293 of the SAELens run, a single token accounts for at least half of the firings. The frequent latents after the first follow punctuation, particles, verb endings, the units of dates and digits, each spread over several tokens.
+
+**No latent of the `topk` run follows the position.** None has more than half of its firings on the first or on the last token of a text. The SAELens run has seven that fire mostly on the last token. Fourteen latents of the `topk` run fire at least five times as often on query tokens as on document tokens; the most frequent of them fires on question marks.
+
+A latent like the first one adds a similar amount to the score of every pair of texts and makes the index longer without telling texts apart. The retrieval head can mask such latents, and the probe reports ranking with and without inverse document frequency weights for the same reason.
 
 ### CUDA
 
@@ -340,7 +372,8 @@ Except for the runs above, all of this uses a randomly initialised two-layer BER
 - The unpadded input layout of Sentence Transformers end to end. It needs flash attention; the head is tested on hand-built features in that layout.
 - AuxK on real activations.
 - A run of the full length on any device. The time estimates above are extrapolations.
-- The pooled, per-text figures, the per-latent listing, the reranking probe and the loss recovered on a real SAE. The code is tested against hand-built cases; no real dictionary has been measured with it yet.
+- The pooled, per-text figures and the per-latent listing at full size. They have been measured only on 8,192 latents and ruri-v3-30m.
+- The reranking probe and the loss recovered on a real SAE. The code is tested against hand-built cases; no real dictionary has been measured with it yet.
 
 ## Research background
 

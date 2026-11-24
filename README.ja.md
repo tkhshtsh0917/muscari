@@ -275,7 +275,7 @@ model.save("runs/ruri-v3-310m-sae-retriever")
 | --- | --- | --- |
 | GitHub Actions、Ubuntu 24.04 | Python 3.12でロック済みの`mise run check`。Python 3.11で対応範囲の最も古い版（PyTorch 2.6、Transformers 4.48、Datasets 3.0、safetensors 0.4.4）のテスト。Python 3.13で最新の版とSAELensを入れたテスト | 成功 |
 | macOS 26.6、Apple M5 Pro、Python 3.12、PyTorch 2.15 | `mise run check`。MPSでのハードウェアのテストとBetterleaksを含みます | 成功 |
-| 同じMac、MPS | `cl-nagoya/ruri-v3-30m`で500万〜3,000万トークンの学習（両方のトレーナー）と、ステップのベンチマーク | 最後まで動作。数値は[設計ガイド](docs/ja/design.md#実際のエンコーダでの試走)を参照 |
+| 同じMac、MPS | `cl-nagoya/ruri-v3-30m`で500万〜3,000万トークンの学習（両方のトレーナー）、そのテキスト単位・潜在ごとの統計、ステップのベンチマーク | 最後まで動作。数値は[設計ガイド](docs/ja/design.md#実際のエンコーダでの試走)を参照 |
 | Google Colab、NVIDIA L4、Python 3.13、PyTorch 2.14 | テスト。CUDAでの損失と勾配をCPUと比較。bfloat16のautocast。ステップのベンチマーク。500万トークンの学習をfloat32とbfloat16で実行 | 成功。数値は設計ガイドを参照 |
 | Linux x86_64 CPU、Python 3.13、PyTorch 2.15 | 整形、lint、mypy、テスト、パッケージビルド、公開内容の監査、ステップのベンチマーク | 成功 |
 
