@@ -40,7 +40,7 @@ from sentence_transformers.sparse_encoder.losses import SparseMultipleNegativesR
 from sentence_transformers.sparse_encoder.modules import SpladePooling, Transformer
 
 from muscari.cli import BENCHMARKS, load_rows
-from muscari.probe import PooledText, RerankingExample, group_reranking_rows, ranking_metrics, sparse_scores
+from muscari.probe import RerankingExample, group_reranking_rows, ranking_metrics
 from muscari.retrieval import build_sparse_encoder
 
 
@@ -147,36 +147,12 @@ def training_rows(rows: Iterable[Mapping[str, Any]], args: argparse.Namespace) -
     return Dataset.from_dict(columns)
 
 
-def encode_sparse(
-    encode: Callable[..., Any],
-    texts: Sequence[str],
-    *,
-    batch_size: int = 32,
-    chunk: int = 256,
-) -> tuple[list[PooledText], int]:
-    """Encode ``texts`` and keep the non-zero entries of each vector, on the CPU.
-
-    The model returns dense vectors a chunk of texts at a time; they are reduced on the CPU, so
-    no sparse tensor is built on the accelerator, whose sparse support varies (Apple MPS), and a
-    vocabulary-sized output never exists for the whole collection at once.
-
-    Returns the vectors and the output dimension.
-    """
-    vectors: list[PooledText] = []
-    dimension = 0
-    for start in range(0, len(texts), chunk):
-        dense = encode(
-            list(texts[start : start + chunk]),
-            batch_size=batch_size,
-            convert_to_tensor=True,
-            convert_to_sparse_tensor=False,
-            save_to_cpu=True,
-        ).float()
-        dimension = int(dense.shape[1])
-        for row in dense:
-            indices = row.nonzero().flatten()
-            vectors.append(PooledText(indices, row[indices], torch.empty(0)))
-    return vectors, dimension
+def _encode(encode: Callable[..., Any], texts: Sequence[str], batch_size: int) -> torch.Tensor:
+    """Dense vectors of ``texts`` on the model's device, in float32."""
+    vectors: torch.Tensor = encode(
+        list(texts), batch_size=batch_size, convert_to_tensor=True, convert_to_sparse_tensor=False
+    )
+    return vectors.float()
 
 
 def rerank(
@@ -184,43 +160,57 @@ def rerank(
     examples: Sequence[RerankingExample],
     *,
     batch_size: int = 32,
+    chunk: int = 256,
     seed: int = 42,
 ) -> dict[str, float]:
     """nDCG@10 and MRR@10 of ranking each query's candidates, with the sparsity of the vectors.
 
+    The query vectors stay on the model's device; the passages are encoded ``chunk`` at a time
+    and scored against every query there, so only the score matrix and per-dimension counts
+    are kept. A vocabulary-sized output, which can be nearly dense before training, is never
+    held for the whole collection, and no sparse tensor is built on the accelerator, whose
+    sparse support varies (Apple MPS).
+
     Candidates are shuffled with ``seed`` before ranking, as ``muscari probe-sae`` does, so an
-    untrained SAE head gives that command's ``sparse.plain`` on the same queries.
+    untrained SAE head gives that command's ``sparse.plain`` on the same queries, up to float32
+    rounding of the scores.
     """
     queries = list(dict.fromkeys(example.query for example in examples))
     passages = list(dict.fromkeys(passage for example in examples for passage in example.passages))
-    encoded_queries, dimension = encode_sparse(model.encode_query, queries, batch_size=batch_size)
-    encoded_passages, _ = encode_sparse(model.encode_document, passages, batch_size=batch_size)
-    query_vectors = dict(zip(queries, encoded_queries, strict=True))
-    passage_vectors = dict(zip(passages, encoded_passages, strict=True))
-    weights = torch.ones(dimension, dtype=torch.float64)
+    query_row = {query: row for row, query in enumerate(queries)}
+    passage_row = {passage: row for row, passage in enumerate(passages)}
+
+    query_vectors = _encode(model.encode_query, queries, batch_size)
+    dimension = int(query_vectors.shape[1])
+    query_active = (query_vectors > 0).float()
+    query_presence = query_active.sum(dim=0).cpu().double() / len(queries)
+    query_nonzero = float(query_active.sum().item())
+
+    scores = torch.empty(len(passages), len(queries), dtype=torch.float64)
+    passage_presence = torch.zeros(dimension, dtype=torch.float64)
+    passage_nonzero = 0.0
+    for start in range(0, len(passages), chunk):
+        vectors = _encode(model.encode_document, passages[start : start + chunk], batch_size)
+        scores[start : start + vectors.shape[0]] = (vectors @ query_vectors.T).cpu().double()
+        active = (vectors > 0).float()
+        passage_presence += active.sum(dim=0).cpu().double()
+        passage_nonzero += float(active.sum().item())
+
     generator = torch.Generator().manual_seed(seed)
     per_query: dict[str, list[float]] = {}
     for example in examples:
         shuffle = torch.randperm(len(example.passages), generator=generator)
-        candidates = [passage_vectors[example.passages[int(position)]] for position in shuffle]
-        scores = sparse_scores(query_vectors[example.query], candidates, weights)
-        for metric, value in ranking_metrics(scores, torch.tensor(example.labels)[shuffle]).items():
+        rows = torch.tensor([passage_row[example.passages[int(position)]] for position in shuffle])
+        candidate_scores = scores[rows, query_row[example.query]]
+        for metric, value in ranking_metrics(candidate_scores, torch.tensor(example.labels)[shuffle]).items():
             per_query.setdefault(metric, []).append(value)
-
-    def presence(vectors: Iterable[PooledText], count: int) -> torch.Tensor:
-        frequency = torch.zeros(dimension, dtype=torch.float64)
-        for vector in vectors:
-            frequency[vector.indices] += 1
-        return frequency / count
 
     result = {metric: sum(values) / len(values) for metric, values in per_query.items()}
     result["queries"] = len(examples)
     result["dimensions"] = dimension
-    result["l0_query"] = sum(vector.indices.numel() for vector in query_vectors.values()) / len(queries)
-    result["l0_passage"] = sum(vector.indices.numel() for vector in passage_vectors.values()) / len(passages)
-    result["flops"] = float(
-        (presence(query_vectors.values(), len(queries)) * presence(passage_vectors.values(), len(passages))).sum()
-    )
+    result["l0_query"] = query_nonzero / len(queries)
+    result["l0_passage"] = passage_nonzero / len(passages)
+    result["flops"] = float((query_presence * passage_presence / len(passages)).sum())
     return result
 
 

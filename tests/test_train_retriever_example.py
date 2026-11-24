@@ -101,6 +101,25 @@ def test_a_stopped_run_continues_from_its_checkpoint(example, tiny_model_dir, da
     assert len(calls) == 1  # only the evaluation after training ran again
 
 
+def test_rerank_matches_a_sparse_computation_for_a_vocabulary_head(example, tiny_mlm_dir, data, tmp_path):
+    args = arguments(example, "mlm", tiny_mlm_dir, data, tmp_path / "out")
+    model = example.build_model(args)
+    examples = example.evaluation_examples(args)
+
+    result = example.rerank(model, examples, chunk=4)
+
+    queries = list(dict.fromkeys(item.query for item in examples))
+    passages = list(dict.fromkeys(passage for item in examples for passage in item.passages))
+    query_vectors = model.encode_query(queries, convert_to_tensor=True, convert_to_sparse_tensor=False).cpu()
+    passage_vectors = model.encode_document(passages, convert_to_tensor=True, convert_to_sparse_tensor=False).cpu()
+    query_presence = (query_vectors > 0).double().mean(dim=0)
+    passage_presence = (passage_vectors > 0).double().mean(dim=0)
+    assert result["l0_query"] == pytest.approx((query_vectors > 0).sum(dim=1).double().mean().item())
+    assert result["l0_passage"] == pytest.approx((passage_vectors > 0).sum(dim=1).double().mean().item())
+    assert result["flops"] == pytest.approx((query_presence * passage_presence).sum().item())
+    assert result == example.rerank(model, examples, chunk=1000)  # the chunk size changes nothing
+
+
 def test_mlm_head_trains_with_the_same_recipe(example, tiny_mlm_dir, data, tmp_path):
     result = example.run(arguments(example, "mlm", tiny_mlm_dir, data, tmp_path / "out", "--negatives", "2"))
 
