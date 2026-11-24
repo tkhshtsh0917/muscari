@@ -5,6 +5,8 @@ from .analysis import evaluate_texts, latent_statistics
 from .data import TextColumn, is_holdout, iter_texts, repeat_texts
 from .devices import resolve_device
 from .export import ExportedSAE, evaluate_sae, load_sae, save_saelens_sae, save_topk_sae
+from .mlm import mlm_loss_recovered
+from .probe import RerankingExample, probe_reranking
 from .sae import TopKSAE, geometric_median, normalized_mse
 from .trainers import (
     SAELensTrainerConfig,
@@ -20,6 +22,7 @@ __all__ = [
     "EncodedText",
     "EncoderActivationSource",
     "ExportedSAE",
+    "RerankingExample",
     "SAELensTrainerConfig",
     "TextColumn",
     "TopKSAE",
@@ -33,7 +36,9 @@ __all__ = [
     "iter_texts",
     "latent_statistics",
     "load_sae",
+    "mlm_loss_recovered",
     "normalized_mse",
+    "probe_reranking",
     "repeat_texts",
     "resolve_device",
     "save_saelens_sae",

@@ -1,9 +1,10 @@
-"""Command line interface: ``muscari train-sae``, ``eval-sae`` and ``inspect-sae``.
+"""Command line interface: ``muscari train-sae``, ``eval-sae``, ``inspect-sae`` and ``probe-sae``.
 
 ``train-sae`` streams texts through a frozen encoder, trains an SAE on the token activations
 with one of the two trainers, exports it in the common format and evaluates it on held-out
 texts. ``eval-sae`` measures an exported SAE on any texts. ``inspect-sae`` lists, for every
-latent, how often it fires and on which tokens.
+latent, how often it fires and on which tokens. ``probe-sae`` reranks the candidates of a
+reranking dataset with the frozen encoder and the SAE, before any retrieval training.
 """
 
 from __future__ import annotations
@@ -13,7 +14,8 @@ import itertools
 import json
 import sys
 import time
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -25,8 +27,22 @@ from .analysis import evaluate_texts, latent_statistics
 from .data import SPLITS, TextColumn, iter_texts, repeat_texts
 from .devices import resolve_device
 from .export import CONFIG_NAME, ExportedSAE, evaluate_sae, load_sae, save_topk_sae
+from .mlm import load_masked_lm, mlm_loss_recovered
+from .probe import group_reranking_rows, probe_reranking
 
 _FILE_LOADERS = {".jsonl": "json", ".json": "json", ".parquet": "parquet", ".csv": "csv", ".txt": "text"}
+
+# Reranking datasets that ``probe-sae --benchmark`` knows how to read.
+BENCHMARKS = {
+    "jqara": {
+        "dataset": "hotchpotch/JQaRA",
+        "split": "test",
+        "query_column": "question",
+        "passage_column": "text",
+        "label_column": "label",
+        "group_column": "q_id",
+    },
+}
 
 
 def _add_encoder_arguments(parser: argparse.ArgumentParser, *, for_training: bool) -> None:
@@ -125,6 +141,16 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--holdout-pct", type=float, help="default: the value recorded with the SAE")
     evaluate.add_argument("--part", choices=SPLITS, help="default: holdout if a holdout percentage is set, else all")
     evaluate.add_argument("--eval-tokens", type=int, help="default: max(200000, 32 * latents)")
+    evaluate.add_argument(
+        "--mlm-texts",
+        type=int,
+        default=0,
+        help=(
+            "also measure the masked-language-model loss recovered on this many texts; "
+            "the encoder must still have its language-model head"
+        ),
+    )
+    evaluate.add_argument("--mlm-probability", type=float, default=0.15, help="share of content tokens masked")
 
     inspect = commands.add_parser(
         "inspect-sae",
@@ -140,6 +166,33 @@ def build_parser() -> argparse.ArgumentParser:
     inspect.add_argument("--holdout-pct", type=float, help="default: the value recorded with the SAE")
     inspect.add_argument("--part", choices=SPLITS, help="default: holdout for the training data, else all")
     inspect.add_argument("--eval-tokens", type=int, help="tokens to look at; default: max(200000, 32 * latents)")
+
+    probe = commands.add_parser(
+        "probe-sae",
+        help="rerank candidates with the frozen encoder and an exported SAE, with nothing trained",
+        description=(
+            "Reads a reranking dataset with one candidate passage per row. Reports the ranking quality of the "
+            "encoder's mean-pooled embeddings with and without the SAE in the path, and of the SAE's pooled "
+            "features on their own. Encoder settings that are omitted are taken from the SAE's sae_config.json."
+        ),
+    )
+    probe.add_argument("--sae", required=True, help="directory with sae.safetensors and sae_config.json")
+    probe.add_argument("--out", help="also write the result to this JSON file")
+    _add_encoder_arguments(probe, for_training=False)
+    group = probe.add_argument_group("data")
+    group.add_argument("--benchmark", choices=sorted(BENCHMARKS), help="a known dataset; sets the options below")
+    group.add_argument("--dataset", help="Hugging Face dataset id")
+    group.add_argument("--data-files", nargs="+", help="local .jsonl, .parquet or .csv files")
+    group.add_argument("--subsets", nargs="*", help="dataset configurations to concatenate")
+    group.add_argument("--split", help="dataset split to read; default: test")
+    group.add_argument("--query-column", help="column with the query text; default: query")
+    group.add_argument("--passage-column", help="column with the candidate passage; default: text")
+    group.add_argument("--label-column", help="column with the relevance label, positive if relevant; default: label")
+    group.add_argument("--group-column", help="column that identifies the query; default: the query text")
+    group.add_argument("--query-prefix", help="prefix the encoder expects for queries")
+    group.add_argument("--passage-prefix", help="prefix the encoder expects for passages")
+    group.add_argument("--max-queries", type=int, default=300, help="queries to sample; 0 uses all of them")
+    group.add_argument("--seed", type=int, default=42, help="seed for the sample of queries and for tie-breaking")
     return parser
 
 
@@ -439,16 +492,33 @@ def train_sae(args: argparse.Namespace) -> dict[str, Any]:
     return metrics
 
 
-def _collect_for_sae(
-    args: argparse.Namespace,
-) -> tuple[ExportedSAE, EncoderActivationSource, list[EncodedText], str, float]:
-    """Load an exported SAE and collect texts for it, filling omitted settings from its config.
+@dataclass
+class _OpenedSAE:
+    """An exported SAE with the encoder and the texts the command line selected for it."""
 
-    Returns the SAE, the activation source, the collected texts, the evaluated part and the
-    holdout percentage in effect.
-    """
+    sae: ExportedSAE
+    source: EncoderActivationSource
+    model: str
+    part: str
+    holdout_pct: float
+    eval_tokens: int
+    texts: Callable[[], Iterator[tuple[str, str]]]
+
+
+def _read_config(sae_dir: Path) -> dict[str, Any]:
+    config: dict[str, Any] = json.loads((sae_dir / CONFIG_NAME).read_text(encoding="utf-8"))
+    return config
+
+
+def _recorded_layer(args: argparse.Namespace, config: dict[str, Any]) -> int | None:
+    recorded = config.get("layer", "last_hidden_state")
+    return args.layer if args.layer is not None else (None if recorded == "last_hidden_state" else recorded)
+
+
+def _open_sae(args: argparse.Namespace) -> _OpenedSAE:
+    """Load an exported SAE, its encoder and the text stream, filling omitted settings from its config."""
     sae_dir = Path(args.sae)
-    config = json.loads((sae_dir / CONFIG_NAME).read_text(encoding="utf-8"))
+    config = _read_config(sae_dir)
 
     model = args.model or config.get("base_model")
     if model is None:
@@ -461,10 +531,6 @@ def _collect_for_sae(
     else:
         raise SystemExit("--columns is required: the SAE config records no columns.")
 
-    recorded_layer = config.get("layer", "last_hidden_state")
-    layer = (
-        args.layer if args.layer is not None else (None if recorded_layer == "last_hidden_state" else recorded_layer)
-    )
     holdout_pct = args.holdout_pct if args.holdout_pct is not None else float(config.get("holdout_pct", 0.0))
     # Held-out texts only make sense for the data the SAE was trained on; other data is all new.
     part = args.part or ("holdout" if holdout_pct > 0 and _same_data(args, config) else "all")
@@ -480,41 +546,149 @@ def _collect_for_sae(
     source = _build_source(
         args,
         max_length=args.max_length or int(config.get("max_length", 1024)),
-        layer=layer,
+        layer=_recorded_layer(args, config),
         exclude_prefix=not args.keep_prefix_tokens and bool(config.get("prefix_tokens_excluded", True)),
         model=model,
         columns=columns,
     )
-    eval_tokens = default_eval_tokens(int(config["num_latents"])) if args.eval_tokens is None else args.eval_tokens
-    texts = source.collect_texts(
-        iter_texts(
-            rows,
-            columns,
-            holdout_pct=holdout_pct,
-            split=part,
-            min_chars=args.min_chars,
-        ),
-        eval_tokens,
+
+    def texts() -> Iterator[tuple[str, str]]:
+        return iter_texts(rows, columns, holdout_pct=holdout_pct, split=part, min_chars=args.min_chars)
+
+    return _OpenedSAE(
+        sae=load_sae(sae_dir, source.device),
+        source=source,
+        model=model,
+        part=part,
+        holdout_pct=holdout_pct,
+        eval_tokens=default_eval_tokens(int(config["num_latents"])) if args.eval_tokens is None else args.eval_tokens,
+        texts=texts,
     )
-    return load_sae(sae_dir, source.device), source, texts, part, holdout_pct
+
+
+def _write_result(result: dict[str, Any], out: str | None) -> None:
+    text = json.dumps(result, ensure_ascii=False, indent=2)
+    if out:
+        Path(out).write_text(text + "\n", encoding="utf-8")
+    print(text, flush=True)
 
 
 def eval_sae(args: argparse.Namespace) -> dict[str, Any]:
     """Run the ``eval-sae`` subcommand and return the metrics."""
-    sae, _, texts, part, holdout_pct = _collect_for_sae(args)
+    opened = _open_sae(args)
+    texts = opened.source.collect_texts(opened.texts(), opened.eval_tokens)
 
-    metrics: dict[str, Any] = {"part": part, "holdout_pct": holdout_pct}
-    metrics.update(evaluate_by_prefix(sae, texts))
-    if args.out:
-        Path(args.out).write_text(json.dumps(metrics, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps(metrics, ensure_ascii=False, indent=2), flush=True)
+    metrics: dict[str, Any] = {"part": opened.part, "holdout_pct": opened.holdout_pct}
+    metrics.update(evaluate_by_prefix(opened.sae, texts))
+
+    if args.mlm_texts > 0:
+        if opened.source.layer is not None:
+            raise SystemExit("--mlm-texts needs an SAE trained on last_hidden_state.")
+        try:
+            masked_lm = load_masked_lm(opened.model, revision=args.revision)
+        except ValueError as error:
+            raise SystemExit(str(error)) from error
+        metrics["mlm"] = {
+            "mask_probability": args.mlm_probability,
+            **mlm_loss_recovered(
+                opened.sae,
+                masked_lm,
+                opened.source,
+                list(itertools.islice(opened.texts(), args.mlm_texts)),
+                mask_probability=args.mlm_probability,
+                seed=args.seed,
+            ),
+        }
+
+    _write_result(metrics, args.out)
     return metrics
+
+
+def probe_sae(args: argparse.Namespace) -> dict[str, Any]:
+    """Run the ``probe-sae`` subcommand and return the result."""
+    sae_dir = Path(args.sae)
+    config = _read_config(sae_dir)
+    preset = BENCHMARKS.get(args.benchmark, {})
+
+    def setting(name: str, default: str | None = None) -> str | None:
+        value: str | None = getattr(args, name)
+        return value if value is not None else preset.get(name, default)
+
+    dataset = setting("dataset")
+    if not dataset and not args.data_files:
+        raise SystemExit("probe-sae needs --benchmark, --dataset or --data-files.")
+    model = args.model or config.get("base_model")
+    if model is None:
+        raise SystemExit("--model is required: the SAE config records no base model.")
+    if _recorded_layer(args, config) is not None:
+        raise SystemExit("probe-sae needs an SAE trained on last_hidden_state.")
+
+    trained_prefixes = sorted({prefix for prefix in config.get("columns", {}).values() if prefix})
+    if trained_prefixes and (args.query_prefix is None or args.passage_prefix is None):
+        raise SystemExit(
+            f"The SAE was trained with the prefixes {trained_prefixes}. Give --query-prefix and "
+            "--passage-prefix; pass an empty string to use none."
+        )
+
+    columns = {
+        name: str(setting(name, default))
+        for name, default in (("query_column", "query"), ("passage_column", "text"), ("label_column", "label"))
+    }
+    group_column = setting("group_column")
+    rows = load_rows(
+        dataset=dataset,
+        subsets=args.subsets,
+        data_files=args.data_files,
+        split=str(setting("split", "test")),
+        column_names=[*columns.values(), *([group_column] if group_column else [])],
+        seed=args.seed,
+    )
+    examples = group_reranking_rows(
+        rows,
+        **columns,
+        group_column=group_column,
+        max_queries=args.max_queries or None,
+    )
+
+    source = _build_source(
+        args,
+        max_length=args.max_length or int(config.get("max_length", 1024)),
+        layer=None,
+        exclude_prefix=not args.keep_prefix_tokens and bool(config.get("prefix_tokens_excluded", True)),
+        model=model,
+        columns=[],
+    )
+    result: dict[str, Any] = {
+        "base_model": _public_name(model),
+        "dataset": [_public_name(name) for name in args.data_files] if args.data_files else dataset,
+        "split": setting("split", "test"),
+        "query_prefix": args.query_prefix or "",
+        "passage_prefix": args.passage_prefix or "",
+        "seed": args.seed,
+    }
+    result.update(
+        probe_reranking(
+            source,
+            load_sae(sae_dir, source.device),
+            examples,
+            query_kind=args.query_prefix or "",
+            passage_kind=args.passage_prefix or "",
+            seed=args.seed,
+        )
+    )
+    _write_result(result, args.out)
+    return result
 
 
 def inspect_sae(args: argparse.Namespace) -> list[dict[str, Any]]:
     """Run the ``inspect-sae`` subcommand and return one record per latent, most frequent first."""
-    sae, source, texts, _, _ = _collect_for_sae(args)
-    records = latent_statistics(sae, texts, top_n=args.top_tokens)
+    opened = _open_sae(args)
+    source = opened.source
+    records = latent_statistics(
+        opened.sae,
+        source.collect_texts(opened.texts(), opened.eval_tokens),
+        top_n=args.top_tokens,
+    )
 
     for record in records:
         ids = [entry["token_id"] for entry in record["top_tokens"]]
@@ -547,8 +721,10 @@ def main(argv: Sequence[str] | None = None) -> None:
         train_sae(args)
     elif args.command == "eval-sae":
         eval_sae(args)
-    else:
+    elif args.command == "inspect-sae":
         inspect_sae(args)
+    else:
+        probe_sae(args)
 
 
 if __name__ == "__main__":

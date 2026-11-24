@@ -7,7 +7,7 @@ from pathlib import Path
 
 import torch
 from tokenizers import Tokenizer, models, pre_tokenizers, processors
-from transformers import BertConfig, BertModel, PreTrainedTokenizerFast
+from transformers import BertConfig, BertForMaskedLM, BertModel, PreTrainedTokenizerFast
 
 from muscari import TextColumn
 
@@ -34,6 +34,24 @@ def make_rows(n: int, seed: int = 42) -> list[dict[str, object]]:
     return [{"anc": sentence(4), "pos": sentence(12), "neg": [sentence(10), sentence(14)]} for _ in range(n)]
 
 
+def perfect_sae(directory: Path, d_in: int = HIDDEN_SIZE):
+    """An exported SAE that reconstructs exactly: latent i carries ReLU(x_i), latent d + i ReLU(-x_i)."""
+    from muscari import load_sae
+    from muscari.export import save_sae
+
+    identity = torch.eye(d_in)
+    return load_sae(
+        save_sae(
+            directory,
+            encoder_weight=torch.cat([identity, -identity]),
+            encoder_bias=torch.zeros(2 * d_in),
+            decoder_weight=torch.cat([identity, -identity], dim=1),
+            decoder_bias=torch.zeros(d_in),
+            config={"k": d_in},
+        )
+    )
+
+
 def write_jsonl(path: Path, rows: list[dict[str, object]]) -> Path:
     path.write_text(
         "\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n",
@@ -42,9 +60,12 @@ def write_jsonl(path: Path, rows: list[dict[str, object]]) -> Path:
     return path
 
 
-def build_tiny_encoder(path: Path) -> Path:
-    """Save a 2-layer random BERT and a word-level tokenizer; each prefix is one token."""
-    specials = ["[PAD]", "[UNK]", "[CLS]", "[SEP]"]
+def build_tiny_encoder(path: Path, *, with_head: bool = False) -> Path:
+    """Save a 2-layer random BERT and a word-level tokenizer; each prefix is one token.
+
+    With ``with_head`` the checkpoint keeps a language-model head and the tokenizer a mask token.
+    """
+    specials = ["[PAD]", "[UNK]", "[CLS]", "[SEP]"] + (["[MASK]"] if with_head else [])
     prefix_words = QUERY_PREFIX.split() + DOC_PREFIX.split()
     vocab = {token: index for index, token in enumerate(specials + sorted(set(WORDS + prefix_words)))}
 
@@ -60,6 +81,7 @@ def build_tiny_encoder(path: Path) -> Path:
         unk_token="[UNK]",
         cls_token="[CLS]",
         sep_token="[SEP]",
+        mask_token="[MASK]" if with_head else None,
     )
 
     torch.manual_seed(42)
@@ -71,6 +93,13 @@ def build_tiny_encoder(path: Path) -> Path:
         intermediate_size=64,
         max_position_embeddings=MAX_POSITIONS,
     )
-    BertModel(config).save_pretrained(path)
+    if with_head:
+        model = BertForMaskedLM(config)
+        # A random head predicts almost uniformly whatever it reads. Sharper logits make its loss
+        # depend on the hidden states, as the loss of a trained head does.
+        model.cls.predictions.transform.LayerNorm.weight.data.mul_(8.0)
+        model.save_pretrained(path)
+    else:
+        BertModel(config).save_pretrained(path)
     fast.save_pretrained(path)
     return path

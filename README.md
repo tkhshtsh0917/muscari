@@ -75,6 +75,13 @@ List what each latent responds to, most frequent first. The table goes to the te
 muscari inspect-sae --sae runs/ruri-v3-310m-sae --data-files other.jsonl --columns "text=検索文書: "
 ```
 
+Rerank the candidates of a reranking dataset with the frozen encoder and the SAE, before any retrieval training. This shows whether the encoder still ranks well with the SAE in its path, and how the SAE's features rank on their own:
+
+```bash
+muscari probe-sae --sae runs/ruri-v3-310m-sae --benchmark jqara \
+  --query-prefix "検索クエリ: " --passage-prefix "検索文書: "
+```
+
 Run `muscari train-sae --help` for every option. An offline example that needs no download is in [examples](examples/README.md).
 
 ## Python API
@@ -185,6 +192,27 @@ A sparse index does not store tokens. It stores one vector per query or document
 
 These fields separate three things a latent can follow other than meaning: one token, one kind of text, or a position in the text.
 
+### Through the encoder's own head
+
+Reconstruction error does not say whether what the SAE loses matters. Two measurements put the SAE back into the encoder and look at what the encoder does with it.
+
+`probe-sae` reads a reranking dataset with one candidate passage per row and ranks the candidates of each query. `--benchmark jqara` reads the test split of [JQaRA](https://huggingface.co/datasets/hotchpotch/JQaRA); `--dataset` or `--data-files` with `--query-column`, `--passage-column`, `--label-column` and `--group-column` read any other. By default 300 queries are sampled, and every figure comes with its standard error over them (`ndcg@10_stderr`).
+
+| Result | Meaning |
+| --- | --- |
+| `dense.original` | nDCG@10 and MRR@10 when ranking by cosine similarity of the encoder's mean-pooled embeddings |
+| `dense.spliced` | the same after every content token state is replaced by the SAE's reconstruction |
+| `dense.empty` | the same after every content token state is replaced by the SAE's decoder bias, which is what the SAE returns for an empty code |
+| `dense.recovered` | `(spliced - empty) / (original - empty)`: the share of the encoder's ranking quality that survives the SAE |
+| `dense.cosine` | cosine similarity between the original and the spliced embedding of the same text: mean, 5th percentile and minimum |
+| `sparse.plain` | ranking by the dot product of the pooled SAE features: `log1p`, then the maximum over the content tokens |
+| `sparse.idf` | the same with each latent weighted by its inverse document frequency among the candidate passages |
+| `sparse.l0` | active latents per query and per passage |
+
+The dense rows need an encoder trained to produce mean-pooled embeddings, such as ruri-v3. The sparse rows are the state of an SAE-based sparse retriever before it is trained, so they are a starting point and not a result.
+
+For an encoder that still has its language-model head, `eval-sae --mlm-texts 100` adds `mlm`: the masked-language-model loss with the encoder untouched (`loss_clean`), with the final states of the content tokens replaced by the SAE's reconstruction (`loss_spliced`) and by their mean (`loss_mean`), and `recovered = (loss_mean - loss_spliced) / (loss_mean - loss_clean)`. The Shizuku SAE card reports this quantity. It does not state the masking rate; the default here is 15% and the value used is written next to the result.
+
 After training, `metrics.json` also holds:
 
 | Metric | Meaning |
@@ -196,7 +224,7 @@ After training, `metrics.json` also holds:
 
 Held-out texts are chosen by a hash of the text itself, so a passage that appears in many rows is never split between training and evaluation. By default 32 tokens per latent are evaluated, and at least 200,000; with fewer, rare latents have no chance to fire and `never_fired_frac` is inflated. `eval-sae` evaluates only the held-out texts when it is given the data the SAE was trained on, and everything otherwise.
 
-These metrics describe reconstruction and dictionary usage, per token and per text. None of them measures retrieval quality.
+The probe measures ranking with nothing trained. No metric here measures the quality of a trained retriever.
 
 ## Validation status
 
@@ -217,6 +245,7 @@ Not run yet: a full-size run of 65,536 latents and one billion tokens on any enc
 - Datasets are loaded in map style and shuffled by row. Streaming datasets are not supported.
 - Activations are used as they come out of the encoder, without the per-token normalisation Gao et al. apply.
 - The SAELens backend cannot resume, and its auxiliary loss is not configurable from here.
+- `probe-sae` and `--mlm-texts` need an SAE trained on `last_hidden_state`.
 
 ## Roadmap
 

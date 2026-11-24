@@ -185,6 +185,21 @@ All of this is measured on the SAE before any retrieval training. Retrieval trai
 
 `text_frequency` is the pooled counterpart of `frequency`. A latent that fires on a few tokens of every text has a low `frequency` and a `text_frequency` near 1, and only the second matters to an index.
 
+#### Through the encoder's own head (`muscari.probe`, `muscari.mlm`)
+
+FVU weighs every direction of the hidden state alike. The encoder does not: its head reads some directions and ignores others. Work on SAEs for language models therefore reports the loss recovered when the reconstruction is spliced into the forward pass. Two counterparts are implemented here, one for each kind of head.
+
+**Embedding models.** For an encoder trained to produce mean-pooled sentence embeddings, the head is the pooling, and the task is ranking. `probe_reranking` computes three embeddings of every text: from the encoder's own token states, with the content token states replaced by the SAE's reconstruction, and with them replaced by the decoder bias, which is the SAE's output for an empty code. Special and prefix positions keep their own states in all three, because the SAE is not trained on them and a retriever built on it does not pass them through it. Mean pooling is linear, so the replaced embeddings follow from sums over the content tokens and need no second forward pass. The candidates of each query are ranked by cosine similarity, and `recovered` is `(spliced - empty) / (original - empty)` for nDCG@10 and MRR@10. The empty-code baseline is not a random ranking: the special and prefix positions are contextual and still carry part of the text.
+
+The same pass gives the pooled sparse vectors, `log1p` of the activations followed by the maximum over the content tokens. This is the pooling the Shizuku SAE card describes as the state of its retriever before retrieval training. Candidates are ranked by the dot product, once as it is and once with each latent weighted by `ln(1 + (N - df + 0.5) / (df + 0.5))`, where `df` counts the candidate passages of all sampled queries in which the latent is active. The gap between the two shows how much the ranking suffers from latents that are active in most passages.
+
+Sparse scores tie often, for example at zero when a query and a passage share no latent. The candidates of each query are shuffled with a fixed seed before ranking, so ties are not resolved by the order of the dataset. Every figure comes with its standard error over the sampled queries, since a sample of a few hundred queries cannot resolve small differences.
+
+**Masked language models.** For an encoder that keeps its language-model head, `mlm_loss_recovered` masks content tokens, replaces the final hidden states of the content positions before the head reads them, and measures the cross-entropy at the masked positions. The baseline is the mean of those states over the evaluated texts, as on the Shizuku SAE card. The states are replaced through a forward hook on the base model, so any architecture that Transformers loads with `AutoModelForMaskedLM` works. A checkpoint without a trained head is refused, since a head initialised at random gives a loss that means nothing.
+
+Both need an SAE trained on `last_hidden_state`.
+
+
 ## Differences from Gao et al.
 
 The paper was read in its arXiv v1 HTML form (Sections 2.1 to 2.4, Appendices A and B), and the [reference implementation](https://github.com/openai/sparse_autoencoder/tree/4965b941e9eb590b00b253a2c406db1e1b193942) in `sparse_autoencoder/train.py`.
@@ -299,6 +314,8 @@ A short run at the full recipe width (`cl-nagoya/ruri-v3-310m`, 65,536 latents, 
 - Holdout split: disjoint, deterministic, independent of prefix and row.
 - Apple MPS and CUDA: losses, gradients and activations agree with the CPU, and the runs above completed. On CUDA, bfloat16 autocast gave the same result as float32 to three decimals.
 - Prefix exclusion with the ruri-v3 tokenizer: by hand, on three texts.
+- Text-level statistics, latent statistics and ranking metrics: against hand-built cases.
+- The reranking probe and the loss recovered: an SAE that reconstructs exactly recovers 1; pooled vectors and replaced embeddings agree with a manual computation; the clean masked-language-model loss equals the model's own loss on the same masked batch.
 
 Except for the runs above, all of this uses a randomly initialised two-layer BERT or synthetic activations. See the [validation status](../README.md#validation-status) for the environments that ran.
 
@@ -308,7 +325,7 @@ Except for the runs above, all of this uses a randomly initialised two-layer BER
 - That an SAE trained here improves retrieval when used as a sparse vocabulary.
 - AuxK on real activations.
 - A run of the full length on any device. The time estimates above are extrapolations.
-- The pooled, per-text figures and the per-latent listing on a real SAE. The code is tested against hand-built cases; no real dictionary has been measured with it yet.
+- The pooled, per-text figures, the per-latent listing, the reranking probe and the loss recovered on a real SAE. The code is tested against hand-built cases; no real dictionary has been measured with it yet.
 
 ## Research background
 

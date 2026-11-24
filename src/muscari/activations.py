@@ -28,11 +28,17 @@ class EncodedBatch(NamedTuple):
             the batch order, then the token order inside each text.
         tokens_per_text: CPU tensor ``(batch,)`` with the number of rows of each text.
         token_ids: CPU tensor ``(n_content_tokens,)`` with the vocabulary id behind each row.
+        hidden_sums: float32 ``(batch, d_in)`` on the encoder's device: the sum of the hidden
+            states over every attended position of a text, special and prefix tokens included.
+            Divided by ``attended`` it is the mean-pooled sentence embedding.
+        attended: CPU tensor ``(batch,)`` with the number of attended positions of each text.
     """
 
     activations: torch.Tensor
     tokens_per_text: torch.Tensor
     token_ids: torch.Tensor
+    hidden_sums: torch.Tensor
+    attended: torch.Tensor
 
 
 class EncodedText(NamedTuple):
@@ -158,6 +164,27 @@ class EncoderActivationSource:
             mask[row, content_positions[: self._prefix_token_counts[prefix]]] = False
         return mask
 
+    def tokenize(self, kinds: list[str], texts: list[str]) -> tuple[Any, torch.Tensor]:
+        """Tokenize one batch as ``encode_texts`` does and return the encoding and the content mask.
+
+        The mask is boolean ``(batch, seq)`` and marks the positions whose activations
+        ``encode_texts`` returns.
+
+        Raises:
+            ValueError: if ``kinds`` and ``texts`` differ in length.
+        """
+        prefixes = [self.prefixes.get(kind, kind) for kind in kinds]
+        encoding = self.tokenizer(
+            [prefix + text for prefix, text in zip(prefixes, texts, strict=True)],
+            padding=True,
+            truncation=True,
+            max_length=self.max_length,
+            return_special_tokens_mask=True,
+            return_offsets_mapping=bool(getattr(self.tokenizer, "is_fast", False)),
+            return_tensors="pt",
+        )
+        return encoding, self._content_mask(encoding, prefixes)
+
     @torch.no_grad()
     def encode_texts(self, kinds: list[str], texts: list[str]) -> EncodedBatch:
         """Encode one batch and return its content-token activations.
@@ -169,17 +196,7 @@ class EncoderActivationSource:
             ValueError: if ``kinds`` and ``texts`` differ in length.
         """
         started = time.perf_counter()
-        prefixes = [self.prefixes.get(kind, kind) for kind in kinds]
-        encoding = self.tokenizer(
-            [prefix + text for prefix, text in zip(prefixes, texts, strict=True)],
-            padding=True,
-            truncation=True,
-            max_length=self.max_length,
-            return_special_tokens_mask=True,
-            return_offsets_mapping=bool(getattr(self.tokenizer, "is_fast", False)),
-            return_tensors="pt",
-        )
-        mask = self._content_mask(encoding, prefixes)
+        encoding, mask = self.tokenize(kinds, texts)
         tokens_per_text = mask.sum(dim=1)
 
         autocast = (
@@ -194,7 +211,10 @@ class EncoderActivationSource:
                 output_hidden_states=self.layer is not None,
             )
         hidden = output.last_hidden_state if self.layer is None else output.hidden_states[self.layer]
-        activations = hidden[mask.to(self.device)].float()
+        hidden = hidden.float()
+        activations = hidden[mask.to(self.device)]
+        attention = encoding["attention_mask"].to(self.device)
+        hidden_sums = (hidden * attention.unsqueeze(-1)).sum(dim=1)
         synchronize(self.device)
 
         self.texts_seen += len(texts)
@@ -202,7 +222,13 @@ class EncoderActivationSource:
         for kind, count in zip(kinds, tokens_per_text.tolist(), strict=True):
             self.tokens_by_prefix[kind] += count
         self.encode_seconds += time.perf_counter() - started
-        return EncodedBatch(activations, tokens_per_text, encoding["input_ids"][mask])
+        return EncodedBatch(
+            activations,
+            tokens_per_text,
+            encoding["input_ids"][mask],
+            hidden_sums,
+            encoding["attention_mask"].sum(dim=1),
+        )
 
     def encode_batch(self, kinds: list[str], texts: list[str]) -> torch.Tensor:
         """Encode one batch and return only the activations of ``encode_texts``."""

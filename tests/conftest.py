@@ -15,6 +15,11 @@ def tiny_model_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return build_tiny_encoder(tmp_path_factory.mktemp("tiny-encoder"))
 
 
+@pytest.fixture(scope="session")
+def tiny_mlm_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return build_tiny_encoder(tmp_path_factory.mktemp("tiny-mlm"), with_head=True)
+
+
 @pytest.fixture
 def source(tiny_model_dir: Path) -> EncoderActivationSource:
     return EncoderActivationSource.from_pretrained(

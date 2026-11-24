@@ -290,6 +290,116 @@ def test_one_label_cannot_stand_for_two_prefixes(tiny_model_dir, data_file, tmp_
         main(arguments)
 
 
+def reranking_rows(n: int, *, query: str = "query", passage: str = "text", label: str = "label") -> list[dict]:
+    """Long-format rows: every query of ``make_rows`` with its positive and its two negatives."""
+    return [
+        {"q_id": f"q{index}", query: row["anc"], passage: text, label: relevance}
+        for index, row in enumerate(make_rows(n, seed=7))
+        for text, relevance in ((row["neg"][0], 0), (row["pos"], 1), (row["neg"][1], 0))
+    ]
+
+
+def test_probe_reranks_with_and_without_the_sae(tiny_model_dir, data_file, tmp_path, capsys):
+    out = tmp_path / "run"
+    main(train_arguments(tiny_model_dir, data_file, out))
+    capsys.readouterr()
+    candidates = write_jsonl(tmp_path / "rerank.jsonl", reranking_rows(12))
+    arguments = [
+        "probe-sae",
+        *("--sae", str(out)),
+        *("--model", str(tiny_model_dir)),
+        *("--data-files", str(candidates)),
+        *("--query-prefix", QUERY_PREFIX),
+        *("--passage-prefix", DOC_PREFIX),
+        *("--max-queries", "5"),
+        *("--out", str(tmp_path / "probe.json")),
+        *("--device", "cpu"),
+    ]
+
+    main(arguments)
+    result = json.loads(capsys.readouterr().out)
+
+    assert result == read_json(tmp_path / "probe.json")
+    assert (result["queries"], result["candidates_per_query"], result["relevant_per_query"]) == (5, 3.0, 1.0)
+    assert result["dataset"] == ["rerank.jsonl"] and result["query_prefix"] == QUERY_PREFIX
+    assert set(result["dense"]) == {"original", "spliced", "empty", "recovered", "cosine"}
+    assert set(result["sparse"]) == {"plain", "idf", "l0"}
+    assert 4 <= result["sparse"]["l0"]["query"] <= result["sparse"]["l0"]["passage"]
+    assert 0.5 < result["dense"]["cosine"]["passage"]["mean"] <= 1.0
+
+    main([*arguments[:-4], *("--max-queries", "0"), *("--device", "cpu")])
+    assert json.loads(capsys.readouterr().out)["queries"] == 12
+
+
+def test_probe_needs_the_prefixes_of_an_sae_trained_with_prefixes(tiny_model_dir, data_file, tmp_path):
+    out = tmp_path / "run"
+    main(train_arguments(tiny_model_dir, data_file, out))
+    candidates = write_jsonl(tmp_path / "rerank.jsonl", reranking_rows(3))
+
+    with pytest.raises(SystemExit, match="--query-prefix"):
+        main(["probe-sae", *("--sae", str(out)), *("--model", str(tiny_model_dir)), *("--data-files", str(candidates))])
+    with pytest.raises(SystemExit, match="--benchmark, --dataset or --data-files"):
+        main(["probe-sae", *("--sae", str(out)), *("--model", str(tiny_model_dir))])
+
+
+def test_probe_benchmark_preset_names_the_dataset_and_its_columns(
+    tiny_model_dir, data_file, tmp_path, capsys, monkeypatch
+):
+    out = tmp_path / "run"
+    main(train_arguments(tiny_model_dir, data_file, out))
+    capsys.readouterr()
+    seen = {}
+
+    def fake_load_rows(**kwargs):
+        seen.update(kwargs)
+        return reranking_rows(4, query="question")
+
+    monkeypatch.setattr("muscari.cli.load_rows", fake_load_rows)
+    main(
+        [
+            "probe-sae",
+            *("--sae", str(out)),
+            *("--model", str(tiny_model_dir)),
+            *("--benchmark", "jqara"),
+            *("--query-prefix", QUERY_PREFIX),
+            *("--passage-prefix", DOC_PREFIX),
+            *("--device", "cpu"),
+        ]
+    )
+    result = json.loads(capsys.readouterr().out)
+
+    assert (seen["dataset"], seen["split"]) == ("hotchpotch/JQaRA", "test")
+    assert seen["column_names"] == ["question", "text", "label", "q_id"]
+    assert (result["dataset"], result["split"], result["queries"]) == ("hotchpotch/JQaRA", "test", 4)
+
+
+def test_evaluation_can_measure_the_masked_lm_loss_recovered(tiny_model_dir, tiny_mlm_dir, data_file, tmp_path, capsys):
+    out = tmp_path / "run"
+    main(train_arguments(tiny_mlm_dir, data_file, out))
+    capsys.readouterr()
+    arguments = [
+        "eval-sae",
+        *("--sae", str(out)),
+        *("--data-files", str(data_file)),
+        *("--eval-tokens", "500"),
+        *("--mlm-texts", "30"),
+        *("--mlm-probability", "0.3"),
+        *("--device", "cpu"),
+    ]
+
+    main([*arguments, *("--model", str(tiny_mlm_dir))])
+    mlm = json.loads(capsys.readouterr().out)["mlm"]
+
+    assert mlm["texts"] == 30 and mlm["mask_probability"] == 0.3 and mlm["masked_tokens"] > 0
+    assert mlm["loss_clean"] > 0 and mlm["loss_mean"] > 0
+    assert mlm["recovered"] == pytest.approx(
+        (mlm["loss_mean"] - mlm["loss_spliced"]) / (mlm["loss_mean"] - mlm["loss_clean"])
+    )
+
+    with pytest.raises(SystemExit, match="no trained language-model head"):
+        main([*arguments, *("--model", str(tiny_model_dir))])
+
+
 def test_default_evaluation_size_grows_with_the_dictionary():
     assert default_eval_tokens(8_192) == 262_144
     assert default_eval_tokens(1_024) == 200_000
