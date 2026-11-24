@@ -49,13 +49,13 @@ mise exec -- env HF_HUB_OFFLINE=0 uv run --frozen --no-sync muscari train-sae ..
 
 `tests/`直下のテストは、ランダムに初期化した2層のBERTと合成した活性でライブラリを確認します。確認しているのは数値計算とインターフェースです。疎な逆伝播を密な自動微分・数値微分と比較し、チェックポイントからの再開が正確であること、書き出しがSAELens自身の推論モデルと一致すること、コマンドラインが最初から最後まで動くことを確かめます。`tests/tooling/`は開発用の監査を確認します。SAELensのテストは、追加依存がない場合はスキップされます。
 
-PyTorchがMPSを使えるMacでは、ハードウェアのテストも実行してください。
+PyTorchがCUDAまたはApple MPSを使えるマシンでは、ハードウェアのテストも実行してください。
 
 ```bash
-mise exec -- uv run --frozen --no-sync pytest -q -m mps
+mise exec -- uv run --frozen --no-sync pytest -q -m accelerator -rs
 ```
 
-損失、勾配、活性をCPUと比較します。それ以外の環境ではスキップされます。どのグループを実行し、どれがスキップされたかを報告してください。
+損失、勾配、活性をCPUと比較し、そのデバイスで小さなSAEを学習します。CUDAではbfloat16のautocastも確認します。どちらのデバイスもない環境ではスキップされます。ホストされたCIもこれに当たります。どのグループを実行し、どれがスキップされたかを報告してください。
 
 ## オフラインの例とベンチマーク
 

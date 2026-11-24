@@ -38,7 +38,7 @@ muscari = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["mps: tests that need an Apple MPS device"]
+markers = ["accelerator: tests that need a CUDA or Apple MPS device"]
 
 [tool.ruff]
 line-length = 120

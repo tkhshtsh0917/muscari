@@ -49,13 +49,13 @@ Writing `HF_HUB_OFFLINE=0` in front of `mise exec` has no effect, because mise a
 
 Tests at the root of `tests/` cover the library with a randomly initialised two-layer BERT and synthetic activations. They check numerics and interfaces: the sparse backward pass against dense autograd and numerical differentiation, exact checkpoint resumption, the export against SAELens' own inference model, and the command line end to end. `tests/tooling/` checks the development audits. The SAELens tests are skipped when the extra is not installed.
 
-On a Mac where PyTorch can use MPS, run the hardware tests as well:
+On a machine where PyTorch can use CUDA or Apple MPS, run the hardware tests as well:
 
 ```bash
-mise exec -- uv run --frozen --no-sync pytest -q -m mps
+mise exec -- uv run --frozen --no-sync pytest -q -m accelerator -rs
 ```
 
-They compare losses, gradients and activations with the CPU and are skipped elsewhere. Report which groups ran and which were skipped.
+They compare losses, gradients and activations with the CPU, train a small SAE on the device and, on CUDA, check bfloat16 autocast. They are skipped where neither device exists, which includes hosted CI. Report which groups ran and which were skipped.
 
 ## Offline example and benchmark
 
