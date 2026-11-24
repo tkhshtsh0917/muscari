@@ -169,7 +169,7 @@ model.save("runs/ruri-v3-310m-sae-retriever")
 
 ほぼすべてのテキストで活性のある潜在は、テキストを区別する役に立ちません。`inspect-sae`の`text_frequency`で見つけ、`build_sparse_encoder(..., head_kwargs={"masked_latents": [...]})`で出力から外せます。
 
-ヘッドは正しさを検証済みです。出力するベクトルは`probe-sae`が採点するベクトルと一致し、勾配は密な計算と一致します。小さなモデルで数ステップ学習すると、エンコーダが更新され、SAEは変わりません。このヘッドで検索モデルを学習したことは、まだありません。
+ヘッドは正しさを検証済みです。出力するベクトルは、小さなモデルでも、ruri-v3-30mと実際のトークナイザでも、`probe-sae`が採点するベクトルと一致します。勾配は密な計算と一致します。小さなモデルで数ステップ学習すると、エンコーダが更新され、SAEは変わりません。このヘッドで検索モデルを学習したことは、まだありません。
 
 ## 出力ファイル
 
@@ -275,13 +275,13 @@ model.save("runs/ruri-v3-310m-sae-retriever")
 
 | 環境 | 実行した内容 | 結果 |
 | --- | --- | --- |
-| GitHub Actions、Ubuntu 24.04 | Python 3.12でロック済みの`mise run check`。Python 3.11で対応範囲の最も古い版（PyTorch 2.6、Transformers 4.48、Datasets 3.0、safetensors 0.4.4）のテスト。Python 3.13で最新の版とSAELensを入れたテスト | 成功 |
+| GitHub Actions、Ubuntu 24.04 | Python 3.12でロック済みの`mise run check`。Python 3.11で対応範囲の最も古い版（PyTorch 2.6、Transformers 4.48、Datasets 3.0、safetensors 0.4.4）のテスト。Python 3.13で最新の版とSAELens、Sentence Transformersを入れたテスト | 成功 |
 | macOS 26.6、Apple M5 Pro、Python 3.12、PyTorch 2.15 | `mise run check`。MPSでのハードウェアのテストとBetterleaksを含みます | 成功 |
-| 同じMac、MPS | `cl-nagoya/ruri-v3-30m`で500万〜3,000万トークンの学習（両方のトレーナー）、そのテキスト単位・潜在ごとの統計、ステップのベンチマーク | 最後まで動作。数値は[設計ガイド](docs/ja/design.md#実際のエンコーダでの試走)を参照 |
+| 同じMac、MPS | `cl-nagoya/ruri-v3-30m`で500万〜3,000万トークンの学習（両方のトレーナー）、そのテキスト単位・潜在ごとの統計、JQaRAの200クエリでの並べ替えのプローブ、検索ヘッドとプローブの照合、ステップのベンチマーク | 最後まで動作。数値は[設計ガイド](docs/ja/design.md#実際のエンコーダでの試走)を参照 |
 | Google Colab、NVIDIA L4、Python 3.13、PyTorch 2.14 | テスト。CUDAでの損失と勾配をCPUと比較。bfloat16のautocast。ステップのベンチマーク。500万トークンの学習をfloat32とbfloat16で実行 | 成功。数値は設計ガイドを参照 |
 | Linux x86_64 CPU、Python 3.13、PyTorch 2.15 | 整形、lint、mypy、テスト、パッケージビルド、公開内容の監査、ステップのベンチマーク | 成功 |
 
-未実行：潜在65,536個・10億トークンの本来の規模での学習、検索性能の測定。自動テストはランダムに初期化した2層のBERTを使います。確認しているのはインターフェースと数値計算で、SAEの品質ではありません。ruri-v3-30mでの学習は、小さな辞書で、それぞれシード一つです。
+未実行：潜在65,536個・10億トークンの本来の規模での学習、新しいコードのCUDAでの実行、検索ヘッドを使った検索学習。並べ替えのプローブが測るのは、何も学習していない状態での順位付けです。自動テストはランダムに初期化した2層のBERTを使います。確認しているのはインターフェースと数値計算で、SAEの品質ではありません。ruri-v3-30mでの学習は、小さな辞書で、それぞれシード一つです。
 
 ## 制限
 

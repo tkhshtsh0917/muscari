@@ -211,7 +211,7 @@ SPLADE scores every vocabulary entry at every token with the language-model head
 - **Masked latents.** A latent that is active in nearly every text adds the same amount to every score. `masked_latents` zeroes chosen latents in the output. This does not free their slot among the `k` latents of a token; it only removes them from the index.
 - **No decoder.** Retrieval does not reconstruct, so the saved head holds only the encoder half.
 
-The head's vectors are the ones `probe-sae` ranks with, which the tests check on the same texts. What the tests cannot show is how well a model trained with the head retrieves.
+The head's vectors are the ones `probe-sae` ranks with, which the tests check on the same texts and which was confirmed with the tokenizer of ruri-v3-30m ([below](#reranking-without-training)). What the tests cannot show is how well a model trained with the head retrieves.
 
 ## Differences from Gao et al.
 
@@ -344,6 +344,23 @@ The eight SAEs of the previous section, measured per text with `eval-sae` on one
 
 A latent like the first one adds a similar amount to the score of every pair of texts and makes the index longer without telling texts apart. The retrieval head can mask such latents, and the probe reports ranking with and without inverse document frequency weights for the same reason.
 
+### Reranking without training
+
+`probe-sae` on three of the SAEs above, with 200 queries of the JQaRA test split, 100 candidate passages each. The passages are the `text` column alone, without titles, so the figures are not comparable with published JQaRA results. Each nDCG@10 has a standard error near 0.02.
+
+| SAE | Dense, encoder as it is | Dense, reconstruction | Dense, empty code | Recovered | Sparse | Sparse with IDF | Active latents, query / passage |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `topk`, 30 million tokens | 0.505 | 0.425 | 0.314 | 0.58 | 0.473 | 0.488 | 161 / 380 |
+| `saelens`, 30 million tokens | 0.505 | 0.420 | 0.309 | 0.57 | 0.475 | 0.491 | 160 / 366 |
+| `topk`, 5 million tokens | 0.505 | 0.442 | 0.333 | 0.64 | 0.465 | 0.460 | 189 / 433 |
+
+- **The SAE's features rank almost as well as the encoder's embeddings before any retrieval training.** The dot product of the pooled features reaches 0.473 against 0.505 for the dense embeddings.
+- **The reconstruction keeps the embedding close and still loses ranking quality.** The mean cosine similarity between a passage's original embedding and the one built from reconstructed token states is 0.972, yet only 58% of the gap between the empty code and the untouched encoder is recovered. Cosine similarity and FVU do not show whether the directions that ranking depends on survive.
+- **A lower FVU did not bring a higher recovery.** The 5-million-token SAE has the worse FVU, 0.445 against 0.342, and the higher recovery, 0.64 against 0.58. The difference may be within the error of 200 queries, and no paired error was computed, but it is a reason not to choose an SAE by FVU alone.
+- **Inverse document frequency weights change little**, 0.015 at most. The latents that are active in most passages, the common-component latent among them, cost the ranking less than their document frequency suggests.
+
+The retrieval head was checked on the same encoder with its real tokenizer. On three queries and four documents its vectors equal the probe's exactly. The prefix has four tokens, Sentence Transformers reports a prompt length of five including the leading special token, and the character-based rule of SAE training drops the same positions.
+
 ### CUDA
 
 The 5-million-token `jsquad` run above, repeated on an NVIDIA L4 with seed 0, gave an FVU of 0.4406 in float32 and 0.4405 with bfloat16 autocast for the encoder and the SAE, against 0.441 on MPS. Throughput was about 55,000 and 76,000 tokens per second.
@@ -373,7 +390,8 @@ Except for the runs above, all of this uses a randomly initialised two-layer BER
 - AuxK on real activations.
 - A run of the full length on any device. The time estimates above are extrapolations.
 - The pooled, per-text figures and the per-latent listing at full size. They have been measured only on 8,192 latents and ruri-v3-30m.
-- The reranking probe and the loss recovered on a real SAE. The code is tested against hand-built cases; no real dictionary has been measured with it yet.
+- The reranking probe beyond 8,192 latents and ruri-v3-30m, with titles in the passages, or on all queries of the benchmark.
+- The masked-language-model loss recovered on a real SAE. The code is tested against hand-built cases only.
 
 ## Research background
 
