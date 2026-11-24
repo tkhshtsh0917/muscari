@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 import torch
-from tiny import DOC_PREFIX, QUERY_PREFIX, make_rows, write_jsonl
+from tiny import DOC_PREFIX, QUERY_PREFIX, WORDS, make_rows, write_jsonl
 
 from muscari import load_sae
 from muscari.cli import default_eval_tokens, load_rows, main
@@ -76,6 +76,13 @@ def test_training_writes_an_evaluated_sae_with_provenance(tiny_model_dir, data_f
     assert sum(group["token_share"] for group in metrics["by_prefix"].values()) == pytest.approx(1.0)
     assert sum(group["tokens"] for group in metrics["by_prefix"].values()) == metrics["eval_tokens"]
     assert all(0 < group["fvu"] < 1.5 for group in metrics["by_prefix"].values())
+
+    pooled = metrics["text_level"]["by_prefix"]
+    assert set(pooled) == {QUERY_PREFIX, DOC_PREFIX}
+    assert pooled[QUERY_PREFIX]["tokens_per_text"] < pooled[DOC_PREFIX]["tokens_per_text"]
+    assert 4 <= pooled[QUERY_PREFIX]["l0"] <= 4 * pooled[QUERY_PREFIX]["tokens_per_text"]  # k = 4 per token
+    assert len(metrics["text_level"]["flops"]) == 3 and all(e["flops"] > 0 for e in metrics["text_level"]["flops"])
+    assert QUERY_PREFIX in (out / "metrics.json").read_text(encoding="utf-8")  # prefixes stay readable
 
     log_lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith('{"step"')]
     assert log_lines[-1]["step"] == 156
@@ -210,6 +217,35 @@ def test_saelens_metrics_have_no_sae_timing(tiny_model_dir, data_file, tmp_path)
     metrics = read_json(out / "metrics.json")
     assert metrics["sae_seconds"] is None and metrics["encoder_seconds"] > 0
     assert 0.0 <= metrics["train_unused_frac"] <= 1.0
+
+
+def test_inspection_lists_latents_with_readable_tokens(tiny_model_dir, data_file, tmp_path, capsys):
+    out = tmp_path / "run"
+    main(train_arguments(tiny_model_dir, data_file, out))
+    capsys.readouterr()
+
+    main(
+        [
+            "inspect-sae",
+            *("--sae", str(out)),
+            *("--model", str(tiny_model_dir)),
+            *("--data-files", str(data_file)),
+            *("--eval-tokens", "1000"),
+            *("--top-tokens", "3"),
+            *("--show", "5"),
+            *("--device", "cpu"),
+        ]
+    )
+    captured = capsys.readouterr()
+
+    records = [json.loads(line) for line in (out / "latents.jsonl").read_text(encoding="utf-8").splitlines()]
+    frequencies = [record["frequency"] for record in records]
+    assert len(records) == 128 and frequencies == sorted(frequencies, reverse=True)
+    assert sum(frequencies) == pytest.approx(read_json(out / "metrics.json")["l0"], rel=0.2)
+    assert all(len(record["top_tokens"]) <= 3 for record in records)
+    assert all(entry["token"] in WORDS for entry in records[0]["top_tokens"])  # prefixes are excluded
+    assert len(captured.out.splitlines()) == 6  # a header and five latents
+    assert "wrote 128 latents to latents.jsonl" in captured.err
 
 
 def test_default_evaluation_size_grows_with_the_dictionary():

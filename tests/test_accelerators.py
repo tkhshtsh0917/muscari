@@ -6,7 +6,18 @@ import pytest
 import torch
 from tiny import DOC_PREFIX, QUERY_PREFIX
 
-from muscari import EncoderActivationSource, TopKSAE, TopKTrainer, TopKTrainerConfig, resolve_device
+from muscari import (
+    EncodedText,
+    EncoderActivationSource,
+    TopKSAE,
+    TopKTrainer,
+    TopKTrainerConfig,
+    evaluate_texts,
+    latent_statistics,
+    load_sae,
+    resolve_device,
+    save_topk_sae,
+)
 
 ACCELERATORS = [
     name
@@ -119,3 +130,18 @@ def test_activations_match_the_cpu(tiny_model_dir, device):
 
     assert accelerated.device.type == device
     assert torch.allclose(accelerated.cpu(), on_cpu, atol=1e-4)
+
+
+def test_text_and_latent_statistics_match_the_cpu(tmp_path, device):
+    torch.manual_seed(42)
+    out = save_topk_sae(tmp_path, TopKSAE(16, 64, 4), {})
+    texts = [
+        EncodedText(prefix, torch.randn(length, 16), torch.randint(50, (length,)))
+        for prefix, length in ((QUERY_PREFIX, 3), (DOC_PREFIX, 40), (QUERY_PREFIX, 1), (DOC_PREFIX, 25))
+    ]
+    on_cpu, accelerated = load_sae(out, "cpu"), load_sae(out, device)
+
+    assert evaluate_texts(accelerated, texts, batch_tokens=32) == evaluate_texts(on_cpu, texts, batch_tokens=32)
+    for fast, exact in zip(latent_statistics(accelerated, texts), latent_statistics(on_cpu, texts), strict=True):
+        assert fast.pop("mean_activation") == pytest.approx(exact.pop("mean_activation"), rel=1e-4)
+        assert fast == exact

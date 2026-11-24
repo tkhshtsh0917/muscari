@@ -69,6 +69,12 @@ Evaluate an exported SAE on other texts. Encoder settings that you omit are read
 muscari eval-sae --sae runs/ruri-v3-310m-sae --data-files other.jsonl --columns "text=検索文書: "
 ```
 
+List what each latent responds to, most frequent first. The table goes to the terminal and the full list to `latents.jsonl` next to the SAE:
+
+```bash
+muscari inspect-sae --sae runs/ruri-v3-310m-sae --data-files other.jsonl --columns "text=検索文書: "
+```
+
 Run `muscari train-sae --help` for every option. An offline example that needs no download is in [examples](examples/README.md).
 
 ## Python API
@@ -121,6 +127,7 @@ features = exported.encode(hidden)  # (tokens, num_latents), k non-zero entries 
 | `sae_config.json` | sizes, activation rule, `k`, base model, layer, dataset, columns and prefixes, holdout percentage, trainer, tokens trained |
 | `metrics.json` | held-out evaluation, dictionary usage, token counts and timings after training |
 | `train_log.jsonl`, `trainer_config.json`, `checkpoint.pt` | `topk` trainer only |
+| `latents.jsonl` | written by `inspect-sae`: one line per latent with its firing frequency, position in the text and most frequent tokens |
 
 The decoder bias is folded into the encoder bias, so encoding is one affine map: `pre = x @ encoder.weight.T + encoder.bias`, then keep the `k` largest values per token after ReLU. Local paths are recorded by file name only.
 
@@ -153,6 +160,31 @@ The decoder bias is folded into the encoder bias, so encoding is one affine map:
 | `median_frequency`, `max_frequency` | firing frequency of the median latent and of the most frequent one |
 | `by_prefix` | token share, `fvu` and `l0` separately for each prefix, that is for queries and documents |
 
+A sparse index does not store tokens. It stores one vector per query or document, pooled over the tokens with a maximum, and pays for every non-zero dimension. `text_level` describes the dictionary after that pooling, where a latent counts as active in a text if it fires on at least one token:
+
+| Metric | Meaning |
+| --- | --- |
+| `texts`, `tokens_per_text` | number of evaluated texts with this prefix and their mean length |
+| `l0`, `l0_median`, `l0_p95` | active latents per text: mean, median and 95th percentile |
+| `never_fired_frac` | share of latents active in none of the texts |
+| `dense_frac` | share of latents active in more than 10% of the texts |
+| `max_document_frequency` | largest share of texts in which a single latent is active |
+| `flops` | for each pair of prefixes, the sum over latents of the product of their activation probabilities: the expected number of multiplications when one text of the first kind is scored against one of the second through an inverted index |
+
+`flops` for a query prefix and a document prefix is the FLOPS figure that [naver/splade](https://github.com/naver/splade) reports for a query and a document index, after [Paria et al.](https://arxiv.org/abs/2004.05665). It is a property of the SAE alone here: nothing has been trained for retrieval, and retrieval training changes it.
+
+`inspect-sae` writes one record per latent to `latents.jsonl`:
+
+| Field | Meaning |
+| --- | --- |
+| `frequency`, `frequency_by_prefix` | share of tokens the latent fires on, overall and among the tokens of each prefix |
+| `text_frequency` | share of texts in which it fires on at least one token |
+| `mean_activation` | its mean value where it fires |
+| `first_token_share`, `last_token_share`, `mean_position` | share of its firings on the first and the last content token of a text, and their mean relative position from 0 to 1 |
+| `top_tokens` | the tokens it fires on most, each with `share` (part of the latent's firings on this token) and `token_rate` (part of the token's occurrences that fire the latent) |
+
+These fields separate three things a latent can follow other than meaning: one token, one kind of text, or a position in the text.
+
 After training, `metrics.json` also holds:
 
 | Metric | Meaning |
@@ -164,7 +196,7 @@ After training, `metrics.json` also holds:
 
 Held-out texts are chosen by a hash of the text itself, so a passage that appears in many rows is never split between training and evaluation. By default 32 tokens per latent are evaluated, and at least 200,000; with fewer, rare latents have no chance to fire and `never_fired_frac` is inflated. `eval-sae` evaluates only the held-out texts when it is given the data the SAE was trained on, and everything otherwise.
 
-These metrics describe reconstruction and dictionary usage per token. They do not yet describe the pooled vector of a whole text, and they do not measure retrieval quality.
+These metrics describe reconstruction and dictionary usage, per token and per text. None of them measures retrieval quality.
 
 ## Validation status
 

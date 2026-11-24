@@ -10,7 +10,7 @@ import time
 from collections import defaultdict
 from collections.abc import Iterable, Iterator
 from contextlib import nullcontext
-from typing import Any
+from typing import Any, NamedTuple
 
 import torch
 
@@ -18,6 +18,29 @@ from .devices import resolve_device, synchronize
 
 # Texts are length-sorted inside pools of this many forward passes to limit padding.
 _POOL_BATCHES = 16
+
+
+class EncodedBatch(NamedTuple):
+    """Content-token activations of one forward pass.
+
+    Attributes:
+        activations: float32 ``(n_content_tokens, d_in)`` on the encoder's device; rows follow
+            the batch order, then the token order inside each text.
+        tokens_per_text: CPU tensor ``(batch,)`` with the number of rows of each text.
+        token_ids: CPU tensor ``(n_content_tokens,)`` with the vocabulary id behind each row.
+    """
+
+    activations: torch.Tensor
+    tokens_per_text: torch.Tensor
+    token_ids: torch.Tensor
+
+
+class EncodedText(NamedTuple):
+    """Content-token activations of one text, on the CPU."""
+
+    prefix: str
+    activations: torch.Tensor
+    token_ids: torch.Tensor
 
 
 class EncoderActivationSource:
@@ -127,13 +150,10 @@ class EncoderActivationSource:
         return mask
 
     @torch.no_grad()
-    def encode_texts(self, prefixes: list[str], texts: list[str]) -> tuple[torch.Tensor, torch.Tensor]:
-        """Encode one batch and return ``(activations, tokens_per_text)``.
+    def encode_texts(self, prefixes: list[str], texts: list[str]) -> EncodedBatch:
+        """Encode one batch and return its content-token activations.
 
-        ``activations`` is float32 ``(n_content_tokens, d_in)`` on ``self.device``; its rows
-        follow the batch order, then the token order inside each text. ``tokens_per_text`` is a
-        CPU tensor ``(batch,)`` with the number of rows each text contributed, which may be
-        zero.
+        A text may contribute zero rows, for example when it is empty.
 
         Raises:
             ValueError: if ``prefixes`` and ``texts`` differ in length.
@@ -171,11 +191,11 @@ class EncoderActivationSource:
         for prefix, count in zip(prefixes, tokens_per_text.tolist(), strict=True):
             self.tokens_by_prefix[prefix] += count
         self.encode_seconds += time.perf_counter() - started
-        return activations, tokens_per_text
+        return EncodedBatch(activations, tokens_per_text, encoding["input_ids"][mask])
 
     def encode_batch(self, prefixes: list[str], texts: list[str]) -> torch.Tensor:
         """Encode one batch and return only the activations of ``encode_texts``."""
-        return self.encode_texts(prefixes, texts)[0]
+        return self.encode_texts(prefixes, texts).activations
 
     def stream(self, texts: Iterable[tuple[str, str]]) -> Iterator[torch.Tensor]:
         """Yield one activation tensor per forward pass.
@@ -186,22 +206,22 @@ class EncoderActivationSource:
         ``shuffled_batches`` before training.
         """
         for pool in self._pools(texts):
-            for activations, _, _ in self._encode_pool(pool):
-                yield activations
+            for batch, _ in self._encode_pool(pool):
+                yield batch.activations
 
     def _encode_pool(
         self,
         pool: list[tuple[str, str]],
-    ) -> Iterator[tuple[torch.Tensor, torch.Tensor, list[str]]]:
-        """Yield ``(activations, tokens_per_text, prefixes)`` for each forward pass over ``pool``."""
+    ) -> Iterator[tuple[EncodedBatch, list[str]]]:
+        """Yield ``(batch, prefixes)`` for each forward pass over ``pool`` that produced activations."""
         pool.sort(key=lambda item: len(item[0]) + len(item[1]))
 
         for start in range(0, len(pool), self.text_batch_size):
             chunk = pool[start : start + self.text_batch_size]
             prefixes = [prefix for prefix, _ in chunk]
-            activations, tokens_per_text = self.encode_texts(prefixes, [text for _, text in chunk])
-            if activations.shape[0]:
-                yield activations, tokens_per_text, prefixes
+            batch = self.encode_texts(prefixes, [text for _, text in chunk])
+            if batch.activations.shape[0]:
+                yield batch, prefixes
 
     def _pools(self, texts: Iterable[tuple[str, str]]) -> Iterator[list[tuple[str, str]]]:
         pool: list[tuple[str, str]] = []
@@ -222,7 +242,7 @@ class EncoderActivationSource:
         Raises:
             ValueError: if the text source produces no activations at all.
         """
-        return torch.cat(list(self.collect_by_prefix(texts, n_tokens).values()))
+        return torch.cat([text.activations for text in self.collect_texts(texts, n_tokens)])
 
     def collect_by_prefix(self, texts: Iterable[tuple[str, str]], n_tokens: int) -> dict[str, torch.Tensor]:
         """Collect up to ``n_tokens`` activations in total, grouped by the prefix of their text.
@@ -234,25 +254,44 @@ class EncoderActivationSource:
         Raises:
             ValueError: if the text source produces no activations at all.
         """
-        groups: dict[str, list[torch.Tensor]] = defaultdict(list)
+        return group_by_prefix(self.collect_texts(texts, n_tokens))
+
+    def collect_texts(self, texts: Iterable[tuple[str, str]], n_tokens: int) -> list[EncodedText]:
+        """Collect texts one by one until ``n_tokens`` activations have been gathered.
+
+        Text boundaries are kept, which is what an evaluation of pooled, per-text vectors
+        needs. Texts without content tokens are left out, and the last text is cut where the
+        token budget ends.
+
+        Raises:
+            ValueError: if the text source produces no activations at all.
+        """
+        collected: list[EncodedText] = []
         remaining = n_tokens
 
         for pool in self._pools(texts):
-            for activations, tokens_per_text, prefixes in self._encode_pool(pool):
-                rows = activations.cpu().split(tokens_per_text.tolist())
-                for prefix, text_rows in zip(prefixes, rows, strict=True):
+            for batch, prefixes in self._encode_pool(pool):
+                lengths = batch.tokens_per_text.tolist()
+                rows = batch.activations.cpu().split(lengths)
+                ids = batch.token_ids.split(lengths)
+                for prefix, text_rows, text_ids in zip(prefixes, rows, ids, strict=True):
                     if remaining <= 0:
-                        break
-                    groups[prefix].append(text_rows[:remaining])
-                    remaining -= min(remaining, text_rows.shape[0])
-                if remaining <= 0:
-                    break
-            if remaining <= 0:
-                break
+                        return collected
+                    if text_rows.shape[0]:
+                        collected.append(EncodedText(prefix, text_rows[:remaining], text_ids[:remaining]))
+                        remaining -= min(remaining, text_rows.shape[0])
 
-        if not groups:
+        if not collected:
             raise ValueError("No activations collected; the text source is empty.")
-        return {prefix: torch.cat(parts) for prefix, parts in groups.items()}
+        return collected
+
+
+def group_by_prefix(texts: Iterable[EncodedText]) -> dict[str, torch.Tensor]:
+    """Concatenate the activations of ``texts`` per prefix, in order of first appearance."""
+    groups: dict[str, list[torch.Tensor]] = defaultdict(list)
+    for text in texts:
+        groups[text.prefix].append(text.activations)
+    return {prefix: torch.cat(parts) for prefix, parts in groups.items()}
 
 
 def shuffled_batches(

@@ -1,6 +1,7 @@
 """Sparse autoencoders for text encoders."""
 
-from .activations import EncoderActivationSource, shuffled_batches
+from .activations import EncodedBatch, EncodedText, EncoderActivationSource, shuffled_batches
+from .analysis import evaluate_texts, latent_statistics
 from .data import TextColumn, is_holdout, iter_texts, repeat_texts
 from .devices import resolve_device
 from .export import ExportedSAE, evaluate_sae, load_sae, save_saelens_sae, save_topk_sae
@@ -15,6 +16,8 @@ from .trainers import (
 __version__ = "0.1.0.dev0"
 
 __all__ = [
+    "EncodedBatch",
+    "EncodedText",
     "EncoderActivationSource",
     "ExportedSAE",
     "SAELensTrainerConfig",
@@ -24,9 +27,11 @@ __all__ = [
     "TopKTrainerConfig",
     "__version__",
     "evaluate_sae",
+    "evaluate_texts",
     "geometric_median",
     "is_holdout",
     "iter_texts",
+    "latent_statistics",
     "load_sae",
     "normalized_mse",
     "repeat_texts",

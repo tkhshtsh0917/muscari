@@ -1,8 +1,9 @@
-"""Command line interface: ``muscari train-sae`` and ``muscari eval-sae``.
+"""Command line interface: ``muscari train-sae``, ``eval-sae`` and ``inspect-sae``.
 
 ``train-sae`` streams texts through a frozen encoder, trains an SAE on the token activations
 with one of the two trainers, exports it in the common format and evaluates it on held-out
-texts. ``eval-sae`` measures an exported SAE on any texts.
+texts. ``eval-sae`` measures an exported SAE on any texts. ``inspect-sae`` lists, for every
+latent, how often it fires and on which tokens.
 """
 
 from __future__ import annotations
@@ -19,7 +20,8 @@ from typing import Any
 import torch
 
 from . import __version__
-from .activations import EncoderActivationSource, shuffled_batches
+from .activations import EncodedText, EncoderActivationSource, group_by_prefix, shuffled_batches
+from .analysis import evaluate_texts, latent_statistics
 from .data import SPLITS, TextColumn, iter_texts, repeat_texts
 from .devices import resolve_device
 from .export import CONFIG_NAME, ExportedSAE, evaluate_sae, load_sae, save_topk_sae
@@ -120,6 +122,21 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--holdout-pct", type=float, help="default: the value recorded with the SAE")
     evaluate.add_argument("--part", choices=SPLITS, help="default: holdout if a holdout percentage is set, else all")
     evaluate.add_argument("--eval-tokens", type=int, help="default: max(200000, 32 * latents)")
+
+    inspect = commands.add_parser(
+        "inspect-sae",
+        help="list what each latent of an exported SAE responds to",
+        description="Encoder settings that are omitted are taken from the SAE's sae_config.json.",
+    )
+    inspect.add_argument("--sae", required=True, help="directory with sae.safetensors and sae_config.json")
+    inspect.add_argument("--out", help="JSON Lines file to write; default: latents.jsonl next to the SAE")
+    inspect.add_argument("--top-tokens", type=int, default=10, help="tokens listed per latent")
+    inspect.add_argument("--show", type=int, default=20, help="most frequent latents printed")
+    _add_encoder_arguments(inspect, for_training=False)
+    _add_data_arguments(inspect, for_training=False)
+    inspect.add_argument("--holdout-pct", type=float, help="default: the value recorded with the SAE")
+    inspect.add_argument("--part", choices=SPLITS, help="default: holdout for the training data, else all")
+    inspect.add_argument("--eval-tokens", type=int, help="tokens to look at; default: max(200000, 32 * latents)")
     return parser
 
 
@@ -189,12 +206,13 @@ def default_eval_tokens(num_latents: int) -> int:
     return max(200_000, 32 * num_latents)
 
 
-def evaluate_by_prefix(sae: ExportedSAE, groups: dict[str, torch.Tensor]) -> dict[str, Any]:
-    """Evaluate on all activations together and on each prefix (queries, documents) separately.
+def evaluate_by_prefix(sae: ExportedSAE, texts: Sequence[EncodedText]) -> dict[str, Any]:
+    """Evaluate per token, overall and per prefix (queries, documents), and per pooled text.
 
     The per-prefix entries carry the group's own FVU, measured around the group's own mean, and
-    its share of the evaluated tokens.
+    its share of the evaluated tokens. ``text_level`` holds the result of ``evaluate_texts``.
     """
+    groups = group_by_prefix(texts)
     total = sum(group.shape[0] for group in groups.values())
     metrics: dict[str, Any] = dict(evaluate_sae(sae, torch.cat(list(groups.values()))))
 
@@ -207,6 +225,7 @@ def evaluate_by_prefix(sae: ExportedSAE, groups: dict[str, torch.Tensor]) -> dic
             "fvu": group_metrics["fvu"],
             "l0": group_metrics["l0"],
         }
+    metrics["text_level"] = evaluate_texts(sae, texts)
     return metrics
 
 
@@ -254,9 +273,9 @@ def train_sae(args: argparse.Namespace) -> dict[str, Any]:
 
     started = time.perf_counter()
     eval_tokens = default_eval_tokens(args.num_latents) if args.eval_tokens is None else args.eval_tokens
-    eval_groups = None
+    eval_texts = None
     if args.holdout_pct > 0 and eval_tokens > 0:
-        eval_groups = source.collect_by_prefix(texts("holdout"), eval_tokens)
+        eval_texts = source.collect_texts(texts("holdout"), eval_tokens)
     source.reset_counters()
 
     epochs_started = 0
@@ -391,16 +410,22 @@ def train_sae(args: argparse.Namespace) -> dict[str, Any]:
         "encoder_seconds": source.encode_seconds,
         "sae_seconds": sae_seconds,
     }
-    if eval_groups is not None:
-        metrics.update(evaluate_by_prefix(exported, eval_groups))
+    if eval_texts is not None:
+        metrics.update(evaluate_by_prefix(exported, eval_texts))
 
-    (out / "metrics.json").write_text(json.dumps(metrics, indent=2) + "\n")
-    print(json.dumps(metrics, indent=2), flush=True)
+    (out / "metrics.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps(metrics, ensure_ascii=False, indent=2), flush=True)
     return metrics
 
 
-def eval_sae(args: argparse.Namespace) -> dict[str, Any]:
-    """Run the ``eval-sae`` subcommand and return the metrics."""
+def _collect_for_sae(
+    args: argparse.Namespace,
+) -> tuple[ExportedSAE, EncoderActivationSource, list[EncodedText], str, float]:
+    """Load an exported SAE and collect texts for it, filling omitted settings from its config.
+
+    Returns the SAE, the activation source, the collected texts, the evaluated part and the
+    holdout percentage in effect.
+    """
     sae_dir = Path(args.sae)
     config = json.loads((sae_dir / CONFIG_NAME).read_text(encoding="utf-8"))
 
@@ -438,7 +463,7 @@ def eval_sae(args: argparse.Namespace) -> dict[str, Any]:
         model=model,
     )
     eval_tokens = default_eval_tokens(int(config["num_latents"])) if args.eval_tokens is None else args.eval_tokens
-    groups = source.collect_by_prefix(
+    texts = source.collect_texts(
         iter_texts(
             rows,
             columns,
@@ -448,13 +473,48 @@ def eval_sae(args: argparse.Namespace) -> dict[str, Any]:
         ),
         eval_tokens,
     )
+    return load_sae(sae_dir, source.device), source, texts, part, holdout_pct
+
+
+def eval_sae(args: argparse.Namespace) -> dict[str, Any]:
+    """Run the ``eval-sae`` subcommand and return the metrics."""
+    sae, _, texts, part, holdout_pct = _collect_for_sae(args)
 
     metrics: dict[str, Any] = {"part": part, "holdout_pct": holdout_pct}
-    metrics.update(evaluate_by_prefix(load_sae(sae_dir, source.device), groups))
+    metrics.update(evaluate_by_prefix(sae, texts))
     if args.out:
-        Path(args.out).write_text(json.dumps(metrics, indent=2) + "\n")
-    print(json.dumps(metrics, indent=2), flush=True)
+        Path(args.out).write_text(json.dumps(metrics, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps(metrics, ensure_ascii=False, indent=2), flush=True)
     return metrics
+
+
+def inspect_sae(args: argparse.Namespace) -> list[dict[str, Any]]:
+    """Run the ``inspect-sae`` subcommand and return one record per latent, most frequent first."""
+    sae, source, texts, _, _ = _collect_for_sae(args)
+    records = latent_statistics(sae, texts, top_n=args.top_tokens)
+
+    for record in records:
+        ids = [entry["token_id"] for entry in record["top_tokens"]]
+        for entry, token in zip(record["top_tokens"], source.tokenizer.convert_ids_to_tokens(ids), strict=True):
+            entry["token"] = token
+
+    out = Path(args.out) if args.out else Path(args.sae) / "latents.jsonl"
+    out.write_text(
+        "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records),
+        encoding="utf-8",
+    )
+
+    print(
+        f"{'latent':>7} {'tokens':>7} {'texts':>7} {'first':>6} {'last':>6}  top tokens (share of the latent's firings)"
+    )
+    for record in records[: args.show]:
+        tokens = "  ".join(f"{entry['token']} {entry['share']:.0%}" for entry in record["top_tokens"][:5])
+        print(
+            f"{record['latent']:>7} {record['frequency']:>7.2%} {record['text_frequency']:>7.2%}"
+            f" {record['first_token_share']:>6.0%} {record['last_token_share']:>6.0%}  {tokens}"
+        )
+    print(f"wrote {len(records)} latents to {out.name}", file=sys.stderr, flush=True)
+    return records
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -462,8 +522,10 @@ def main(argv: Sequence[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     if args.command == "train-sae":
         train_sae(args)
-    else:
+    elif args.command == "eval-sae":
         eval_sae(args)
+    else:
+        inspect_sae(args)
 
 
 if __name__ == "__main__":

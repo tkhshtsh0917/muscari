@@ -116,10 +116,12 @@ def test_encode_texts_reports_tokens_per_text_and_counts_by_prefix(source):
     prefixes = [DOC_PREFIX, QUERY_PREFIX, DOC_PREFIX, DOC_PREFIX]
     texts = ["東京 求人 検索", "名古屋 営業", "", "開発"]
 
-    activations, tokens_per_text = source.encode_texts(prefixes, texts)
+    batch = source.encode_texts(prefixes, texts)
+    vocabulary = source.tokenizer.get_vocab()
 
-    assert tokens_per_text.tolist() == [3, 2, 0, 1]
-    assert activations.shape[0] == 6
+    assert batch.tokens_per_text.tolist() == [3, 2, 0, 1]
+    assert batch.activations.shape[0] == 6
+    assert batch.token_ids.tolist() == [vocabulary[word] for word in "東京 求人 検索 名古屋 営業 開発".split()]
     assert dict(source.tokens_by_prefix) == {DOC_PREFIX: 4, QUERY_PREFIX: 2}
     assert source.encode_seconds > 0
 
@@ -156,6 +158,24 @@ def test_grouped_activations_belong_to_their_prefix(source):
 
     assert torch.allclose(groups[QUERY_PREFIX], expected_queries, atol=1e-5)  # the pool is sorted by length
     assert torch.allclose(groups[DOC_PREFIX], source.encode_batch([DOC_PREFIX], ["名古屋 営業 開発"]), atol=1e-5)
+
+
+def test_collect_texts_keeps_text_boundaries_and_cuts_at_the_budget(source):
+    texts = [(QUERY_PREFIX, "東京 求人"), (DOC_PREFIX, "名古屋 営業 開発"), (QUERY_PREFIX, ""), (QUERY_PREFIX, "経理")]
+
+    collected = source.collect_texts(texts, 100)
+    capped = source.collect_texts(texts, 4)
+
+    # Sorted by length inside the pool; the empty text contributes nothing.
+    assert [(text.prefix, text.activations.shape[0]) for text in collected] == [
+        (QUERY_PREFIX, 1),
+        (QUERY_PREFIX, 2),
+        (DOC_PREFIX, 3),
+    ]
+    assert all(text.token_ids.shape[0] == text.activations.shape[0] for text in collected)
+    assert [text.activations.shape[0] for text in capped] == [1, 2, 1]
+    with pytest.raises(ValueError, match="No activations"):
+        source.collect_texts([(QUERY_PREFIX, "")], 10)
 
 
 def numbered_stream(n_chunks: int, rows: int) -> list[torch.Tensor]:

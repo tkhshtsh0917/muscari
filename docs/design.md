@@ -162,7 +162,27 @@ Evaluation runs on the exported files with the same code for both trainers.
 
 The frequency figures taken from an evaluation sample depend on its size: with few tokens, rare latents have had no chance to fire. The default is therefore 32 tokens per latent and at least 200,000, which is about 2 million tokens for 65,536 latents.
 
-A good FVU does not imply good retrieval. Latents that fire on a large share of tokens behave like stop words in an inverted index and make posting lists long, which is why the frequency figures are reported next to FVU. What is still missing is the view after pooling: the number of non-zero dimensions of a whole query or document, which is what index size and query latency depend on.
+A good FVU does not imply good retrieval. Latents that fire on a large share of tokens behave like stop words in an inverted index and make posting lists long, which is why the frequency figures are reported next to FVU.
+
+#### After pooling (`muscari.analysis`)
+
+An index built on an SAE stores one vector per text: the maximum of each latent over the content tokens, usually after `log1p`. Index size follows the non-zero dimensions per document, and query latency follows the non-zero dimensions per query and the length of the posting lists they hit. `evaluate_texts` therefore keeps text boundaries and measures the pooled sparsity pattern. A latent is active in a text when it fires on at least one token; `log1p` and any other increasing map of the values leave this pattern unchanged.
+
+- `l0` per text, with median and 95th percentile, separately for each prefix. With `k` latents per token a text of `n` tokens has between `k` and `min(k * n, num_latents)` active latents; where it falls in between says how much the tokens of a text share latents.
+- `max_document_frequency` and `dense_frac` count latents that are active in a large share of texts. Such a latent has a posting list as long as the collection and cannot discriminate, whatever it fires on.
+- `flops` is `sum_j p_a(j) * p_b(j)`, where `p_a(j)` is the share of texts with prefix `a` in which latent `j` is active. For a query prefix and a document prefix this is the expected number of posting-list entries touched per query, divided by the number of documents. It is the quantity the FLOPS regulariser of Paria et al. bounds and the figure naver/splade reports at evaluation time.
+
+All of this is measured on the SAE before any retrieval training. Retrieval training changes the encoder, so these figures are a starting point and not a prediction of the final index.
+
+#### Per latent
+
+`latent_statistics`, and `inspect-sae` on the command line, list every latent with the numbers that tell apart three things a latent can follow other than meaning:
+
+- a token: `top_tokens` with `share` and `token_rate`. A latent whose firings fall almost entirely on one token, and which fires on almost every occurrence of it, is a vocabulary entry;
+- a kind of text: `frequency_by_prefix`. A latent that fires on queries and hardly on documents carries the prefix, not the content;
+- a position: `first_token_share`, `last_token_share` and `mean_position`, to be compared with `1 / tokens_per_text`. A latent whose firings sit on the first or the last token whatever that token is follows the position.
+
+`text_frequency` is the pooled counterpart of `frequency`. A latent that fires on a few tokens of every text has a low `frequency` and a `text_frequency` near 1, and only the second matters to an index.
 
 ## Differences from Gao et al.
 
@@ -287,7 +307,7 @@ Except for the runs above, all of this uses a randomly initialised two-layer BER
 - That an SAE trained here improves retrieval when used as a sparse vocabulary.
 - AuxK on real activations.
 - A run of the full length on any device. The time estimates above are extrapolations.
-- The pooled, per-text view of the dictionary: non-zero dimensions per query and document.
+- The pooled, per-text figures and the per-latent listing on a real SAE. The code is tested against hand-built cases; no real dictionary has been measured with it yet.
 
 ## Research background
 

@@ -55,7 +55,7 @@ On a machine where PyTorch can use CUDA or Apple MPS, run the hardware tests as 
 mise exec -- uv run --frozen --no-sync pytest -q -m accelerator -rs
 ```
 
-They compare losses, gradients and activations with the CPU, train a small SAE on the device and, on CUDA, check bfloat16 autocast. They are skipped where neither device exists, which includes hosted CI. Report which groups ran and which were skipped.
+They compare losses, gradients, activations and the evaluation statistics with the CPU, train a small SAE on the device and, on CUDA, check bfloat16 autocast. They are skipped where neither device exists, which includes hosted CI. Report which groups ran and which were skipped.
 
 ## Offline example and benchmark
 
