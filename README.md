@@ -119,7 +119,7 @@ features = exported.encode(hidden)  # (tokens, num_latents), k non-zero entries 
 | --- | --- |
 | `sae.safetensors` | `encoder.weight (M, d)`, `encoder.bias (M)`, `decoder.weight (d, M)`, `decoder.bias (d)`, and `threshold (M)` for JumpReLU SAEs |
 | `sae_config.json` | sizes, activation rule, `k`, base model, layer, dataset, columns and prefixes, holdout percentage, trainer, tokens trained |
-| `metrics.json` | held-out evaluation after training |
+| `metrics.json` | held-out evaluation, dictionary usage, token counts and timings after training |
 | `train_log.jsonl`, `trainer_config.json`, `checkpoint.pt` | `topk` trainer only |
 
 The decoder bias is folded into the encoder bias, so encoding is one affine map: `pre = x @ encoder.weight.T + encoder.bias`, then keep the `k` largest values per token after ReLU. Local paths are recorded by file name only.
@@ -141,28 +141,42 @@ The decoder bias is folded into the encoder bias, so encoding is one affine map:
 
 ## Evaluation
 
-`metrics.json` and `eval-sae` report:
+`metrics.json` and `eval-sae` report, on held-out tokens:
 
 | Metric | Meaning |
 | --- | --- |
 | `fvu` | fraction of variance unexplained: squared reconstruction error over the variance around the mean activation |
 | `l0` | mean number of active latents per token |
 | `never_fired_frac` | share of latents that never fire on the evaluated tokens |
+| `rare_frac` | share of latents that fire less than a tenth as often as the average latent |
 | `dense_frac` | share of latents that fire on more than 10% of the tokens |
-| `max_frequency` | the largest share of tokens a single latent fires on |
+| `median_frequency`, `max_frequency` | firing frequency of the median latent and of the most frequent one |
+| `by_prefix` | token share, `fvu` and `l0` separately for each prefix, that is for queries and documents |
 
-Held-out texts are chosen by a hash of the text itself, so a passage that appears in many rows is never split between training and evaluation. These metrics describe reconstruction and dictionary usage. They do not measure retrieval quality.
+After training, `metrics.json` also holds:
+
+| Metric | Meaning |
+| --- | --- |
+| `train_unused_frac` | share of latents that did not fire during the last 10 million training tokens (the whole run if it was shorter) |
+| `tokens_encoded_by_prefix` | how many training tokens came from queries and from documents |
+| `epochs_started` | how many passes over the deduplicated texts were started |
+| `encoder_seconds`, `sae_seconds`, `wall_seconds` | time spent in the encoder, in the SAE updates (`topk` trainer) and in total |
+
+Held-out texts are chosen by a hash of the text itself, so a passage that appears in many rows is never split between training and evaluation. By default 32 tokens per latent are evaluated, and at least 200,000; with fewer, rare latents have no chance to fire and `never_fired_frac` is inflated. `eval-sae` evaluates only the held-out texts when it is given the data the SAE was trained on, and everything otherwise.
+
+These metrics describe reconstruction and dictionary usage per token. They do not yet describe the pooled vector of a whole text, and they do not measure retrieval quality.
 
 ## Validation status
 
 | Environment | What ran | Result |
 | --- | --- | --- |
 | GitHub Actions, Ubuntu 24.04 | the locked `mise run check` on Python 3.12; the tests with the lowest supported versions on Python 3.11 (PyTorch 2.6, Transformers 4.48, Datasets 3.0, safetensors 0.4.4); the tests with the newest versions and SAELens on Python 3.13 | passed |
-| macOS 26.6, Apple M5 Pro, Python 3.12, PyTorch 2.15 | `mise run check`, including the four MPS tests and Betterleaks | passed |
-| The same Mac, MPS | a trial of 5 million tokens on `cl-nagoya/ruri-v3-30m` with both trainers, and the step benchmark | ran end to end; numbers in the [design guide](docs/design.md#trial-on-a-real-encoder) |
+| macOS 26.6, Apple M5 Pro, Python 3.12, PyTorch 2.15 | `mise run check`, including the hardware tests on MPS and Betterleaks | passed |
+| The same Mac, MPS | runs of 5 to 30 million tokens on `cl-nagoya/ruri-v3-30m` with both trainers, and the step benchmark | ran end to end; numbers in the [design guide](docs/design.md#trial-on-a-real-encoder) |
+| Google Colab, NVIDIA L4, Python 3.13, PyTorch 2.14 | the tests; loss and gradients on CUDA against the CPU; bfloat16 autocast; the step benchmark; a 5-million-token run in float32 and bfloat16 | passed; numbers in the design guide |
 | Linux x86_64 CPU, Python 3.13, PyTorch 2.15 | formatting, lint, mypy, tests, package build, public-content audit, step benchmark | passed |
 
-Not run yet: CUDA (including bfloat16 autocast on CUDA), a full-size run of 65,536 latents and one billion tokens on any encoder, and any measurement of retrieval quality. The automated tests use a randomly initialised two-layer BERT, which checks interfaces and numerics, not SAE quality. The trial on ruri-v3-30m is one short run with one seed.
+Not run yet: a full-size run of 65,536 latents and one billion tokens on any encoder, and any measurement of retrieval quality. The automated tests use a randomly initialised two-layer BERT, which checks interfaces and numerics, not SAE quality. The runs on ruri-v3-30m use a small dictionary and one seed each.
 
 ## Limitations
 

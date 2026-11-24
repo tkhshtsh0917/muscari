@@ -119,7 +119,7 @@ features = exported.encode(hidden)  # (トークン数, 潜在数)。非ゼロ�
 | --- | --- |
 | `sae.safetensors` | `encoder.weight (M, d)`、`encoder.bias (M)`、`decoder.weight (d, M)`、`decoder.bias (d)`。JumpReLU型のSAEでは`threshold (M)`も含みます |
 | `sae_config.json` | サイズ、活性化の規則、`k`、元のモデル、層、データセット、列とプレフィックス、ホールドアウトの割合、トレーナー、学習トークン数 |
-| `metrics.json` | 学習後のホールドアウト評価 |
+| `metrics.json` | 学習後のホールドアウト評価、辞書の使われ方、トークン数、所要時間 |
 | `train_log.jsonl`、`trainer_config.json`、`checkpoint.pt` | `topk`トレーナーのみ |
 
 デコーダのバイアスはエンコーダのバイアスに畳み込んであります。符号化はアフィン変換一つで済みます。`pre = x @ encoder.weight.T + encoder.bias`を計算し、トークンごとにReLU後の上位`k`個を残します。ローカルのパスはファイル名だけを記録します。
@@ -141,28 +141,42 @@ features = exported.encode(hidden)  # (トークン数, 潜在数)。非ゼロ�
 
 ## 評価
 
-`metrics.json`と`eval-sae`は次の指標を出力します。
+`metrics.json`と`eval-sae`は、ホールドアウトのトークンで次の指標を出力します。
 
 | 指標 | 意味 |
 | --- | --- |
 | `fvu` | 説明できなかった分散の割合。再構成の二乗誤差を、平均活性まわりの分散で割った値です |
 | `l0` | トークンあたりの発火した潜在の平均個数 |
 | `never_fired_frac` | 評価したトークンで一度も発火しなかった潜在の割合 |
+| `rare_frac` | 平均的な潜在の10分の1未満しか発火しなかった潜在の割合 |
 | `dense_frac` | トークンの10%超で発火した潜在の割合 |
-| `max_frequency` | 最も頻繁に発火した潜在の発火率 |
+| `median_frequency`、`max_frequency` | 中央の潜在の発火率と、最も頻繁に発火した潜在の発火率 |
+| `by_prefix` | プレフィックスごと、つまりクエリと文書を分けた、トークンの比率・`fvu`・`l0` |
 
-ホールドアウトに回すテキストは、テキスト自身のハッシュで決めます。多くの行に現れる文書が学習側と評価側に分かれることはありません。これらの指標は再構成と辞書の使われ方を表すもので、検索性能を測るものではありません。
+学習後の`metrics.json`には、次の値も入ります。
+
+| 指標 | 意味 |
+| --- | --- |
+| `train_unused_frac` | 学習の最後の1,000万トークンで一度も発火しなかった潜在の割合（学習がそれより短ければ全体） |
+| `tokens_encoded_by_prefix` | 学習に使ったトークンのうち、クエリ由来と文書由来の数 |
+| `epochs_started` | 重複除去後のテキストを何周目まで読み始めたか |
+| `encoder_seconds`、`sae_seconds`、`wall_seconds` | エンコーダ、SAEの更新（`topk`トレーナー）、全体にかかった時間 |
+
+ホールドアウトに回すテキストは、テキスト自身のハッシュで決めます。多くの行に現れる文書が学習側と評価側に分かれることはありません。評価するトークン数の既定値は潜在1個あたり32トークンで、最低でも20万です。これより少ないと、まれにしか発火しない潜在に発火する機会がなく、`never_fired_frac`が大きく出ます。`eval-sae`は、SAEの学習に使ったデータを渡された場合だけホールドアウト分を評価し、それ以外のデータではすべてを評価します。
+
+これらの指標は、トークン単位の再構成と辞書の使われ方を表します。テキスト全体をプーリングしたベクトルについての指標はまだなく、検索性能を測るものでもありません。
 
 ## 検証状況
 
 | 環境 | 実行した内容 | 結果 |
 | --- | --- | --- |
 | GitHub Actions、Ubuntu 24.04 | Python 3.12でロック済みの`mise run check`。Python 3.11で対応範囲の最も古い版（PyTorch 2.6、Transformers 4.48、Datasets 3.0、safetensors 0.4.4）のテスト。Python 3.13で最新の版とSAELensを入れたテスト | 成功 |
-| macOS 26.6、Apple M5 Pro、Python 3.12、PyTorch 2.15 | `mise run check`。MPSのテスト4件とBetterleaksを含みます | 成功 |
-| 同じMac、MPS | `cl-nagoya/ruri-v3-30m`で500万トークンの試走（両方のトレーナー）と、ステップのベンチマーク | 最後まで動作。数値は[設計ガイド](docs/ja/design.md#実際のエンコーダでの試走)を参照 |
+| macOS 26.6、Apple M5 Pro、Python 3.12、PyTorch 2.15 | `mise run check`。MPSでのハードウェアのテストとBetterleaksを含みます | 成功 |
+| 同じMac、MPS | `cl-nagoya/ruri-v3-30m`で500万〜3,000万トークンの学習（両方のトレーナー）と、ステップのベンチマーク | 最後まで動作。数値は[設計ガイド](docs/ja/design.md#実際のエンコーダでの試走)を参照 |
+| Google Colab、NVIDIA L4、Python 3.13、PyTorch 2.14 | テスト。CUDAでの損失と勾配をCPUと比較。bfloat16のautocast。ステップのベンチマーク。500万トークンの学習をfloat32とbfloat16で実行 | 成功。数値は設計ガイドを参照 |
 | Linux x86_64 CPU、Python 3.13、PyTorch 2.15 | 整形、lint、mypy、テスト、パッケージビルド、公開内容の監査、ステップのベンチマーク | 成功 |
 
-未実行：CUDA（CUDA上のbfloat16 autocastを含む）、潜在65,536個・10億トークンの本来の規模での学習、検索性能の測定。自動テストはランダムに初期化した2層のBERTを使います。確認しているのはインターフェースと数値計算で、SAEの品質ではありません。ruri-v3-30mでの試走は、シード一つの短い実行1回です。
+未実行：潜在65,536個・10億トークンの本来の規模での学習、検索性能の測定。自動テストはランダムに初期化した2層のBERTを使います。確認しているのはインターフェースと数値計算で、SAEの品質ではありません。ruri-v3-30mでの学習は、小さな辞書で、それぞれシード一つです。
 
 ## 制限
 

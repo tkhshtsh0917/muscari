@@ -71,7 +71,7 @@ grad z[b, m]  = <r[b], W_dec[m]>
 
 These are accumulated with gathers and `index_add_` in row chunks, so no `(batch, n, d_in)` block is kept for the backward pass. The tests compare losses and gradients against a dense implementation with plain autograd, and against numerical differentiation in double precision.
 
-The auxiliary term selects up to 256 latents per token, sixteen times more than the main term, and a gather moves data far more slowly than a matrix product multiplies it. While the dead latents number at most `64 * aux_k`, the auxiliary path therefore uses dense products restricted to the dead columns; beyond that it uses gathers, whose cost does not depend on the number of dead latents. Both paths are tested against the same oracle.
+The auxiliary term selects up to 256 latents per token, sixteen times more than the main term, and a gather moves data far more slowly than a matrix product multiplies it. The auxiliary path therefore prefers dense products restricted to the dead columns. On CUDA it always uses them. On other devices it does so while the dead latents number at most `64 * aux_k`; beyond that it uses gathers, whose time and memory do not depend on the number of dead latents. Both paths are tested against the same oracle.
 
 Measured with `benchmarks/sae_step.py` (65,536 latents, width 768, `k = 16`, `aux_k = 256`, random activations, x86_64 CPU with 2 threads, PyTorch 2.15, median of 3 steps after the first):
 
@@ -94,7 +94,20 @@ The same benchmark on an Apple M5 Pro (macOS 26.6, PyTorch 2.15, 10% dead latent
 | MPS | 8,192 | off | 0.52 s, 12.1 GB | not run |
 | CPU, 1 thread | 2,048 | on | 0.51 s, 3.2 GB | not run |
 
-On MPS, memory is what the driver has allocated at the end of the run, which includes the allocator's cache and is larger than the tensors in use. At 0.60 s per step of 8,192 tokens, the SAE updates alone would take about 20 hours for one billion tokens on this machine, before the time of the encoder. CUDA has not been measured, and the threshold of `64 * aux_k` was chosen from the CPU measurements only.
+On MPS, memory is what the driver has allocated at the end of the run, which includes the allocator's cache and is larger than the tensors in use. At 0.60 s per step of 8,192 tokens, the SAE updates alone would take about 20 hours for one billion tokens on this machine, before the time of the encoder.
+
+On an NVIDIA L4 (Google Colab, PyTorch 2.14, CUDA 13.0, 8,192 tokens per batch, median of 5 steps after the first, peak allocated memory):
+
+| Dead latents | Auxiliary loss | Precision | Sparse backward | Dense autograd |
+| ---: | --- | --- | ---: | ---: |
+| – | off | float32 | 177 ms, 3.8 GB | 544 ms, 8.1 GB |
+| 10% | on | float32 | 220 ms, 4.1 GB | 894 ms, 10.4 GB |
+| 50% | on | float32 | 386 ms, 4.9 GB | not run |
+| 90% | on | float32 | 551 ms, 5.8 GB | not run |
+| – | off | bfloat16 autocast | 101 ms, 2.9 GB | not run |
+| 10% | on | bfloat16 autocast | 133 ms, 3.0 GB | not run |
+
+The rule for the auxiliary path comes from these measurements. On the L4, gathers took 580 ms at 50% dead and 620 ms at 90%, slower than the dense products at the same peak memory, so CUDA always uses the dense form. On the 7 GB CPU machine the dense form was no faster at 50% and ran out of memory at 90%, so the threshold stays elsewhere. MPS was measured at 10% only. The first two rows come from `benchmarks/sae_step.py`. The others were timed in a training loop that also renormalises the decoder, where the first two conditions took 191 ms and 237 ms; the 50% and 90% rows force the dense auxiliary path, which is what CUDA now uses.
 
 ### 6. Trainers
 
@@ -140,9 +153,16 @@ so a retrieval head needs only `encoder.weight` and `encoder.bias`. SAELens stor
 
 ### 8. Evaluation
 
-Evaluation runs on the exported files with the same code for both trainers. `fvu` is the squared reconstruction error over the variance around the mean activation of the evaluated tokens. `l0` is the mean number of active latents per token. `never_fired_frac`, `dense_frac` (latents firing on more than 10% of tokens) and `max_frequency` describe how evenly the dictionary is used. The frequency figures depend on the number of evaluated tokens: with few tokens, rare latents have had no chance to fire.
+Evaluation runs on the exported files with the same code for both trainers.
 
-A good FVU does not imply good retrieval. Latents that fire on a large share of tokens behave like stop words in an inverted index and make posting lists long, which is why the frequency figures are reported next to FVU.
+- `fvu` is the squared reconstruction error over the variance around the mean activation of the evaluated tokens. `l0` is the mean number of active latents per token.
+- `never_fired_frac`, `rare_frac`, `dense_frac`, `median_frequency` and `max_frequency` describe how evenly the dictionary is used. The average latent fires on `l0 / num_latents` of the tokens; `rare_frac` counts the latents below a tenth of that, and `dense_frac` those above 10% of all tokens.
+- `by_prefix` repeats `fvu` and `l0` for each prefix, with the group's share of the tokens. Queries are short, so they are a small part of the tokens and the overall figure mostly describes documents.
+- `train_unused_frac` is the share of latents that did not fire during the last 10 million training tokens, or the whole run if it was shorter. It comes from the trainer's own bookkeeping and does not depend on the size of the evaluation sample.
+
+The frequency figures taken from an evaluation sample depend on its size: with few tokens, rare latents have had no chance to fire. The default is therefore 32 tokens per latent and at least 200,000, which is about 2 million tokens for 65,536 latents.
+
+A good FVU does not imply good retrieval. Latents that fire on a large share of tokens behave like stop words in an inverted index and make posting lists long, which is why the frequency figures are reported next to FVU. What is still missing is the view after pooling: the number of non-zero dimensions of a whole query or document, which is what index size and query latency depend on.
 
 ## Differences from Gao et al.
 
@@ -226,6 +246,29 @@ What they do not show:
 - Why half of the SAELens latents still never fired. The short budget is a candidate, as described for the SAELens backend above, but a longer run was not made.
 - A like-for-like comparison of the trainers. The columns differ in auxiliary loss, dead-latent bookkeeping, decoder scaling and initialisation.
 
+### Training length
+
+The same setting on the nine retrieval subsets of the dataset (`auto-wiki-qa-nemotron`, `jaquad`, `jqara`, `jsquad`, `miracl`, `mkqa`, `mr-tydi`, `quiz-no-mori`, `quiz-works`), seed 42, one independent run per length and trainer, evaluated on 200,000 held-out tokens. The SAELens runs start the decoder bias at the geometric median.
+
+| Training tokens | `topk` FVU | `saelens` FVU | `saelens` latents that never fired | Largest firing share, `topk` / `saelens` |
+| ---: | ---: | ---: | ---: | ---: |
+| 5 million | 0.444 | 0.474 | 54.1% | 5.3% / 6.4% |
+| 10 million | 0.396 | 0.420 | 17.1% | 6.6% / 5.2% |
+| 20 million | 0.360 | 0.365 | 0.9% | 6.6% / 13.3% |
+| 30 million | 0.341 | 0.342 | 0.8% | 14.2% / 14.1% |
+
+- The unused latents of the SAELens backend were a matter of training length. With enough tokens the two trainers reach the same FVU; in short runs the `topk` trainer is ahead, and every one of its latents fired at every length.
+- FVU was still falling at 30 million tokens, by less each time the length doubled.
+- No latent of the `topk` runs was ever flagged dead, so AuxK was not exercised at this size (width 256, 8,192 latents).
+- In the longer runs of both trainers one latent fires on about 14% of the tokens. What it responds to has not been examined.
+- Throughput halved from the fourth run on, from about 43,000 to about 23,000 tokens per second, across separate processes. The cause was not isolated; these runs did not record encoder and SAE time separately.
+
+### CUDA
+
+The 5-million-token `jsquad` run above, repeated on an NVIDIA L4 with seed 0, gave an FVU of 0.4406 in float32 and 0.4405 with bfloat16 autocast for the encoder and the SAE, against 0.441 on MPS. Throughput was about 55,000 and 76,000 tokens per second.
+
+A short run at the full recipe width (`cl-nagoya/ruri-v3-310m`, 65,536 latents, 3 million tokens, bfloat16) ran at about 15,000 tokens per second on the L4 including the encoder. The SAE updates alone take 133 ms per 8,192 tokens there, about 62,000 tokens per second, so the encoder is the larger part. At that rate one billion tokens would take about 19 hours on an L4. This is an extrapolation from a 3-million-token run, not a measurement.
+
 ## What is verified
 
 - Losses and gradients of the sparse backward pass: against dense autograd and numerical differentiation.
@@ -233,18 +276,18 @@ What they do not show:
 - Export: identical outputs to the trained module, and to SAELens' own inference model for `topk` and `batchtopk`.
 - Content-token selection: against a manual forward pass, with fast and offset-less tokenizers.
 - Holdout split: disjoint, deterministic, independent of prefix and row.
-
-- Apple MPS: losses, gradients and activations agree with the CPU, and the trial above ran end to end.
+- Apple MPS and CUDA: losses, gradients and activations agree with the CPU, and the runs above completed. On CUDA, bfloat16 autocast gave the same result as float32 to three decimals.
 - Prefix exclusion with the ruri-v3 tokenizer: by hand, on three texts.
 
-Except for the trial above, all of this uses a randomly initialised two-layer BERT or synthetic activations. See the [validation status](../README.md#validation-status) for the environments that ran.
+Except for the runs above, all of this uses a randomly initialised two-layer BERT or synthetic activations. See the [validation status](../README.md#validation-status) for the environments that ran.
 
 ## What is not verified
 
 - SAE quality on a real encoder: reconstruction, dead and dense latents at 65,536 latents and one billion tokens.
 - That an SAE trained here improves retrieval when used as a sparse vocabulary.
 - AuxK on real activations.
-- CUDA, including bfloat16 autocast on CUDA. The autocast code path is exercised on CPU only.
+- A run of the full length on any device. The time estimates above are extrapolations.
+- The pooled, per-text view of the dictionary: non-zero dimensions per query and document.
 
 ## Research background
 
