@@ -256,7 +256,7 @@ Three things the card describes are outside this command:
 
 - **The data.** The card lists about 846 million tokens (70.1% documents, 14.9% queries, 14.9% Wikipedia articles) from mqa-ja, auto-wiki-qa, Japanese Wikipedia, mmarco-ja and smaller sets, some of them not public, with items that overlap certain evaluation sets removed. muscari ships no recipe for this corpus.
 - **The model revision.** The card names revision `77675fc`; pass the full commit hash with `--revision`.
-- **The evaluation.** The card reports an FVU of 0.155 on 2 million held-out document tokens, an MLM loss recovery of 0.944 and no feature unused over the last 10 million training tokens. muscari reports the first and the last of these in its own form and has no MLM loss recovery.
+- **The evaluation.** The card reports an FVU of 0.155 on 2 million held-out document tokens, an MLM loss recovery of 0.944 and no feature unused over the last 10 million training tokens. muscari reports all three in its own form; the MLM loss recovery comes from `eval-sae --mlm-texts`, whose masking rate and texts are muscari's choice because the card states neither.
 
 Everything the card does not state (initialisation, the dead-latent threshold, shuffling, the loss normalisation, input normalisation, the training library) is muscari's own choice, mostly following Gao et al. The result is therefore a run with a published recipe, not a reproduction of that SAE. The saved tensors have the same layout as the card's file; loading one as the other has not been tried.
 
