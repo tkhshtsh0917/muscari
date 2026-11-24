@@ -36,3 +36,24 @@ muscari train-sae \
 このリポジトリのmise環境では、検査中に何もダウンロードしないよう、Hugging Face Hubをオフラインにしています。その中で実行するときは、コマンドの前に`mise exec -- env HF_HUB_OFFLINE=0 uv run --frozen --no-sync`を付けてください。`mise exec`の前に変数を書いても効きません。
 
 MPSを使うApple M5 Proでは、このコマンドは200秒で終わりました。モデルとデータセットのダウンロード、ホールドアウト評価を含む時間です。得られた数値は[設計ガイド](../docs/ja/design.md#実際のエンコーダでの試走)にあります。
+
+## 検索学習
+
+`train_retriever.py`は、Sentence Transformersで疎検索モデルを学習し、学習の前後で並べ替え用データセットの候補を順位付けします。`retrieval`の追加依存が必要です。2種類のヘッドを同じデータ、損失、スケジュールで学習できるので、両者を比べられます。
+
+- `--head sae`は、書き出したSAEの潜在を語彙として使います。`muscari.retrieval`を通します。
+- `--head mlm`は、SPLADEと同じく、言語モデルのヘッドを通してトークナイザの語彙を使います。エンコーダにそのヘッドが残っている必要があります。
+
+```bash
+python examples/train_retriever.py \
+  --head sae --sae runs/ruri-v3-30m-sae-trial \
+  --query-prompt "検索クエリ: " --document-prompt "検索文書: " \
+  --dataset cl-nagoya/ruri-v3-dataset-ft --subsets jsquad \
+  --query-column anc --positive-column pos --negative-column neg \
+  --benchmark jqara --max-steps 1000 \
+  --out runs/ruri-v3-30m-retriever-trial
+```
+
+損失は、バッチ内のネガティブとクエリごとに1件のハードネガティブを使う対照損失に、クエリと文書へのFLOPS正則化を加えたものです。正則化の重みは、最初の30%のステップで0から二次関数的に上げます。学習率、正則化の重み、このスケジュールは、[sae-splade-ja-310m](https://huggingface.co/mahiyama/sae-splade-ja-310m)のモデルカードが学習の第1段階について書いている値です。バッチサイズ、長さの上限、ステップ数は小さめの既定値で、カードの値ではありません。
+
+スクリプトは、学習の前後のnDCG@10、MRR@10、クエリ・文書1件あたりの非ゼロ次元数、FLOPSを`results.json`に書き出し、モデルを保存します。SAEのヘッドの学習前の値は、同じクエリに対する`muscari probe-sae`の`sparse.plain`と一致します。テストでは、ランダムな小さいエンコーダで両方のヘッドを3ステップ学習しています。このスクリプトで実際のエンコーダを学習したことは、まだありません。

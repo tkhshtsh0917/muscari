@@ -165,6 +165,7 @@ def inspect_artifacts() -> list[str]:
             "uv.lock",
             "scripts/check_public.py",
             "examples/train_tiny.py",
+            "examples/train_retriever.py",
             "tests/test_sae.py",
         }
         for name in sorted(required - entries.keys()):

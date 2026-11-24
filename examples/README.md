@@ -36,3 +36,24 @@ muscari train-sae \
 Inside this repository's mise environment the Hugging Face Hub is switched to offline mode so that checks never download anything. There, prefix the command with `mise exec -- env HF_HUB_OFFLINE=0 uv run --frozen --no-sync`. Setting the variable in front of `mise exec` has no effect.
 
 On an Apple M5 Pro with MPS this command took 200 seconds, including the download of the model and the dataset subset and the held-out evaluation. The numbers it produced are in the [design guide](../docs/design.md#trial-on-a-real-encoder).
+
+## Retrieval training
+
+`train_retriever.py` trains a sparse retriever with Sentence Transformers and ranks the candidates of a reranking dataset before and after. It needs the `retrieval` extra. Two heads train with the same data, loss and schedule, so that they can be compared:
+
+- `--head sae` uses the latents of an exported SAE as the vocabulary, through `muscari.retrieval`;
+- `--head mlm` uses the tokenizer's vocabulary through the language-model head, as SPLADE does. The encoder must still have that head.
+
+```bash
+python examples/train_retriever.py \
+  --head sae --sae runs/ruri-v3-30m-sae-trial \
+  --query-prompt "検索クエリ: " --document-prompt "検索文書: " \
+  --dataset cl-nagoya/ruri-v3-dataset-ft --subsets jsquad \
+  --query-column anc --positive-column pos --negative-column neg \
+  --benchmark jqara --max-steps 1000 \
+  --out runs/ruri-v3-30m-retriever-trial
+```
+
+The loss is a contrastive loss with in-batch negatives and one hard negative per query, plus a FLOPS regulariser on queries and documents whose weight rises quadratically from zero over the first 30% of the steps. The learning rate, the regulariser weight and that schedule are the ones the model card of [sae-splade-ja-310m](https://huggingface.co/mahiyama/sae-splade-ja-310m) states for its first training stage; the batch size, the length limit and the number of steps are small defaults and not that card's.
+
+The script writes `results.json` with nDCG@10, MRR@10, the active dimensions per query and passage and FLOPS, before and after training, and saves the model. Before training, an SAE head gives the `sparse.plain` result of `muscari probe-sae` on the same queries. The tests run both heads for three steps on a tiny random encoder. No run on a real encoder has been made with this script yet.

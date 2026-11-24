@@ -163,6 +163,8 @@ trainer.train()
 model.save("runs/ruri-v3-310m-sae-retriever")
 ```
 
+このヘッドを学習するスクリプトは[examples](examples/README.ja.md#検索学習)にあります。比較用に、語彙型のSPLADEのヘッドを同じ手順で学習することもできます。
+
 保存したモデルは、muscariをインストールした環境で`SparseEncoder(path, trust_remote_code=True)`として読み込みます。Sentence Transformersは、自身の名前空間の外にあるモジュールクラスすべてにこの指定を求めます。
 
 ほぼすべてのテキストで活性のある潜在は、テキストを区別する役に立ちません。`inspect-sae`の`text_frequency`で見つけ、`build_sparse_encoder(..., head_kwargs={"masked_latents": [...]})`で出力から外せます。

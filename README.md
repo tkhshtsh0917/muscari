@@ -163,6 +163,8 @@ trainer.train()
 model.save("runs/ruri-v3-310m-sae-retriever")
 ```
 
+A complete script that trains this head or, for comparison, a vocabulary-based SPLADE head with the same recipe is in [examples](examples/README.md#retrieval-training).
+
 A saved model loads with `SparseEncoder(path, trust_remote_code=True)` while muscari is installed. Sentence Transformers asks for that flag for every module class outside its own namespace.
 
 Latents that are active in nearly every text cannot tell texts apart. `inspect-sae` lists them by `text_frequency`, and `build_sparse_encoder(..., head_kwargs={"masked_latents": [...]})` removes them from the output.
