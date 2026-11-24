@@ -363,7 +363,7 @@ The retrieval head was checked on the same encoder with its real tokenizer. On t
 
 ### Three 310M encoders
 
-The same probe on SAEs with 16,384 latents trained on 10 million tokens of three encoders of about 310M parameters, with the same 200 queries and passages without titles. `ruri-v3-310m` is trained for retrieval, `ruri-v3-pt-310m` is its pre-trained starting point, and `modernbert-ja-310m` is a masked language model whose mean-pooled states were never trained as embeddings.
+The same probe on SAEs with 16,384 latents trained on 10 million tokens of three encoders of about 310M parameters. It ranks the first 100 of the 200 queries above, again without titles, so each nDCG@10 has a standard error near 0.025. The SAEs were trained on the retrieval subsets of `cl-nagoya/ruri-v3-dataset-ft` including `jqara`. `ruri-v3-310m` is trained for retrieval, `ruri-v3-pt-310m` is its pre-trained starting point, and `modernbert-ja-310m` is a masked language model whose mean-pooled states were never trained as embeddings.
 
 | Encoder | FVU | Dense, encoder as it is | Recovered | Sparse | Sparse with IDF | Active latents, query / passage |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
