@@ -41,6 +41,7 @@ BENCHMARKS = {
         "passage_column": "text",
         "label_column": "label",
         "group_column": "q_id",
+        "title_column": "title",
     },
 }
 
@@ -189,6 +190,10 @@ def build_parser() -> argparse.ArgumentParser:
     group.add_argument("--passage-column", help="column with the candidate passage; default: text")
     group.add_argument("--label-column", help="column with the relevance label, positive if relevant; default: label")
     group.add_argument("--group-column", help="column that identifies the query; default: the query text")
+    group.add_argument(
+        "--title-column", help='column with a passage title; the passage becomes "{title} {text}" as in JQaRA'
+    )
+    group.add_argument("--without-title", action="store_true", help="ignore the title column of the benchmark")
     group.add_argument("--query-prefix", help="prefix the encoder expects for queries")
     group.add_argument("--passage-prefix", help="prefix the encoder expects for passages")
     group.add_argument("--max-queries", type=int, default=300, help="queries to sample; 0 uses all of them")
@@ -635,18 +640,20 @@ def probe_sae(args: argparse.Namespace) -> dict[str, Any]:
         for name, default in (("query_column", "query"), ("passage_column", "text"), ("label_column", "label"))
     }
     group_column = setting("group_column")
+    title_column = None if args.without_title else setting("title_column")
     rows = load_rows(
         dataset=dataset,
         subsets=args.subsets,
         data_files=args.data_files,
         split=str(setting("split", "test")),
-        column_names=[*columns.values(), *([group_column] if group_column else [])],
+        column_names=[*columns.values(), *(name for name in (group_column, title_column) if name)],
         seed=args.seed,
     )
     examples = group_reranking_rows(
         rows,
         **columns,
         group_column=group_column,
+        title_column=title_column,
         max_queries=args.max_queries or None,
     )
 
@@ -662,6 +669,7 @@ def probe_sae(args: argparse.Namespace) -> dict[str, Any]:
         "base_model": _public_name(model),
         "dataset": [_public_name(name) for name in args.data_files] if args.data_files else dataset,
         "split": setting("split", "test"),
+        "title_column": title_column,
         "query_prefix": args.query_prefix or "",
         "passage_prefix": args.passage_prefix or "",
         "seed": args.seed,

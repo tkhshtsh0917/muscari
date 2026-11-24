@@ -58,11 +58,19 @@ def test_rows_are_grouped_per_query():
 
     examples = group_reranking_rows(rows, **columns, group_column="id")
     assert examples == [
-        RerankingExample("東京", ("p1", "p3"), (0, 1)),
-        RerankingExample("名古屋", ("p2", "p5"), (1, 0)),
+        RerankingExample("東京", ("p1", "p3"), (0, 1), "a"),
+        RerankingExample("名古屋", ("p2", "p5"), (1, 0), "b"),
     ]
-    assert group_reranking_rows(rows, **columns) == examples  # the query text identifies the query
-    assert group_reranking_rows(rows, **columns, max_queries=1) == examples[:1]
+    by_text = group_reranking_rows(rows, **columns)  # the query text identifies the query
+    assert [(e.query, e.passages, e.labels, e.query_id) for e in by_text] == [
+        ("東京", ("p1", "p3"), (0, 1), "東京"),
+        ("名古屋", ("p2", "p5"), (1, 0), "名古屋"),
+    ]
+    assert group_reranking_rows(rows, **columns, group_column="id", max_queries=1) == examples[:1]
+
+    titled = [dict(row, t=f"T{row['id']}") for row in rows]
+    with_titles = group_reranking_rows(titled, **columns, group_column="id", title_column="t")
+    assert with_titles[0].passages == ("Ta p1", "Ta p3")  # the JQaRA evaluator's "{title} {text}"
 
     with pytest.raises(ValueError, match="relevant candidate"):
         group_reranking_rows(rows[3:4], **columns)

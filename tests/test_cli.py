@@ -293,7 +293,7 @@ def test_one_label_cannot_stand_for_two_prefixes(tiny_model_dir, data_file, tmp_
 def reranking_rows(n: int, *, query: str = "query", passage: str = "text", label: str = "label") -> list[dict]:
     """Long-format rows: every query of ``make_rows`` with its positive and its two negatives."""
     return [
-        {"q_id": f"q{index}", query: row["anc"], passage: text, label: relevance}
+        {"q_id": f"q{index}", query: row["anc"], passage: text, label: relevance, "title": "名古屋"}
         for index, row in enumerate(make_rows(n, seed=7))
         for text, relevance in ((row["neg"][0], 0), (row["pos"], 1), (row["neg"][1], 0))
     ]
@@ -369,8 +369,26 @@ def test_probe_benchmark_preset_names_the_dataset_and_its_columns(
     result = json.loads(capsys.readouterr().out)
 
     assert (seen["dataset"], seen["split"]) == ("hotchpotch/JQaRA", "test")
-    assert seen["column_names"] == ["question", "text", "label", "q_id"]
+    assert seen["column_names"] == ["question", "text", "label", "q_id", "title"]
     assert (result["dataset"], result["split"], result["queries"]) == ("hotchpotch/JQaRA", "test", 4)
+    assert result["title_column"] == "title"  # passages are "{title} {text}", as in the JQaRA evaluator
+
+    main(
+        [
+            "probe-sae",
+            *("--sae", str(out)),
+            *("--model", str(tiny_model_dir)),
+            *("--benchmark", "jqara"),
+            *("--split", "dev"),
+            "--without-title",
+            *("--query-prefix", QUERY_PREFIX),
+            *("--passage-prefix", DOC_PREFIX),
+            *("--device", "cpu"),
+        ]
+    )
+    untitled = json.loads(capsys.readouterr().out)
+    assert seen["split"] == "dev" and seen["column_names"] == ["question", "text", "label", "q_id"]
+    assert untitled["title_column"] is None and untitled["split"] == "dev"
 
 
 def test_evaluation_can_measure_the_masked_lm_loss_recovered(tiny_model_dir, tiny_mlm_dir, data_file, tmp_path, capsys):

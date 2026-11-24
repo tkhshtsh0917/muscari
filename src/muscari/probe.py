@@ -28,11 +28,15 @@ VARIANTS = ("original", "spliced", "empty")
 
 @dataclass(frozen=True)
 class RerankingExample:
-    """One query with its candidate passages; ``labels`` are 1 for relevant and 0 otherwise."""
+    """One query with its candidate passages; ``labels`` are 1 for relevant and 0 otherwise.
+
+    ``query_id`` identifies the query across runs, so per-query results can be paired.
+    """
 
     query: str
     passages: tuple[str, ...]
     labels: tuple[int, ...]
+    query_id: str | None = None
 
 
 class PooledText(NamedTuple):
@@ -59,20 +63,24 @@ def group_reranking_rows(
     passage_column: str,
     label_column: str,
     group_column: str | None = None,
+    title_column: str | None = None,
     max_queries: int | None = None,
 ) -> list[RerankingExample]:
     """Group long-format rows, one candidate passage per row, into one example per query.
 
     Rows belong together when they share the value of ``group_column``, or the query text if
-    no such column is given. Queries are taken in order of first appearance; with
-    ``max_queries`` only the first ones are kept, so shuffle the rows beforehand to draw a
-    sample. Queries without a relevant candidate cannot be scored and are left out.
+    no such column is given; that value becomes the ``query_id``. Queries are taken in order
+    of first appearance; with ``max_queries`` only the first ones are kept, so shuffle the rows
+    beforehand to draw a sample. Queries without a relevant candidate cannot be scored and are
+    left out.
+
+    With ``title_column`` a passage is ``"{title} {text}"``, the form the JQaRA evaluator uses.
 
     Raises:
         ValueError: if a column is missing or no query with a relevant candidate is found.
     """
     key_column = group_column or query_column
-    needed = {key_column, query_column, passage_column, label_column}
+    needed = {key_column, query_column, passage_column, label_column} | ({title_column} if title_column else set())
     grouped: dict[Any, tuple[str, list[str], list[int]]] = {}
 
     for row in rows:
@@ -83,12 +91,15 @@ def group_reranking_rows(
             if max_queries is not None and len(grouped) >= max_queries:
                 continue
             grouped[key] = (str(row[query_column]), [], [])
-        grouped[key][1].append(str(row[passage_column]))
+        passage = str(row[passage_column])
+        if title_column:
+            passage = f"{row[title_column]} {passage}"
+        grouped[key][1].append(passage)
         grouped[key][2].append(int(row[label_column] > 0))
 
     examples = [
-        RerankingExample(query, tuple(passages), tuple(labels))
-        for query, passages, labels in grouped.values()
+        RerankingExample(query, tuple(passages), tuple(labels), str(key))
+        for key, (query, passages, labels) in grouped.items()
         if any(labels)
     ]
     if not examples:
