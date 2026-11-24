@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 import torch
-from tiny import DOC_PREFIX, QUERY_PREFIX
+from tiny import DOC_PREFIX, HIDDEN_SIZE, QUERY_PREFIX, make_rows, perfect_sae
 
 from muscari import (
     EncodedText,
@@ -145,3 +145,70 @@ def test_text_and_latent_statistics_match_the_cpu(tmp_path, device):
     for fast, exact in zip(latent_statistics(accelerated, texts), latent_statistics(on_cpu, texts), strict=True):
         assert fast.pop("mean_activation") == pytest.approx(exact.pop("mean_activation"), rel=1e-4)
         assert fast == exact
+
+
+def test_pooled_vectors_and_embeddings_match_the_cpu(tiny_model_dir, tmp_path, device):
+    from muscari.probe import pool_texts
+
+    torch.manual_seed(42)
+    out = save_topk_sae(tmp_path, TopKSAE(HIDDEN_SIZE, 96, 4), {})
+    texts = [str(row["pos"]) for row in make_rows(6)]
+    results = {}
+
+    for name in ("cpu", device):
+        source = EncoderActivationSource.from_pretrained(str(tiny_model_dir), text_batch_size=4, device=name)
+        results[name] = pool_texts(source, load_sae(out, name), DOC_PREFIX, texts, token_chunk=16)
+
+    for fast, exact in zip(results[device], results["cpu"], strict=True):
+        assert torch.equal(fast.indices, exact.indices)
+        assert torch.allclose(fast.values, exact.values, atol=1e-4)
+        assert torch.allclose(fast.embeddings, exact.embeddings, atol=1e-4)
+
+
+def test_masked_lm_loss_recovered_matches_the_cpu(tiny_mlm_dir, tmp_path, device):
+    from muscari.mlm import load_masked_lm, mlm_loss_recovered
+
+    texts = [(DOC_PREFIX, str(row["pos"])) for row in make_rows(8)]
+    results = {}
+
+    for name in ("cpu", device):
+        source = EncoderActivationSource.from_pretrained(str(tiny_mlm_dir), max_length=32, device=name)
+        sae = perfect_sae(tmp_path / name).to(name)
+        results[name] = mlm_loss_recovered(sae, load_masked_lm(str(tiny_mlm_dir)), source, texts, mask_probability=0.3)
+
+    assert results[device]["masked_tokens"] == results["cpu"]["masked_tokens"]
+    for key in ("loss_clean", "loss_spliced", "loss_mean"):
+        assert results[device][key] == pytest.approx(results["cpu"][key], rel=1e-4)
+
+
+def test_retrieval_head_matches_the_cpu(device):
+    pytest.importorskip("sentence_transformers")
+    from muscari.retrieval import SAEPooling
+
+    torch.manual_seed(42)
+    reference = SAEPooling(16, 128, k=4, special_token_ids=[0], trainable=True, token_chunk=5)
+    torch.nn.init.normal_(reference.encoder_weight)
+    states = torch.randn(3, 6, 16)
+    input_ids = torch.tensor([[0, 5, 6, 7, 8, 9], [0, 5, 6, 1, 1, 1], [0, 5, 6, 7, 1, 1]])
+    attention = (input_ids != 1).long()
+    target = torch.randn(3, 128)
+    results = {}
+
+    for name in ("cpu", device):
+        head = SAEPooling(16, 128, k=4, special_token_ids=[0], trainable=True, token_chunk=5)
+        head.load_state_dict(reference.state_dict())
+        head.to(name)
+        inputs = states.to(name).requires_grad_(True)
+        features = {
+            "token_embeddings": inputs,
+            "input_ids": input_ids.to(name),
+            "attention_mask": attention.to(name),
+            "prompt_length": 1,
+        }
+        pooled = head(features)["sentence_embedding"]
+        (pooled * target.to(name)).sum().backward()
+        results[name] = (pooled.detach().cpu(), inputs.grad.cpu(), head.encoder_weight.grad.cpu())
+
+    assert results[device][0].shape == (3, 128)
+    for fast, exact in zip(results[device], results["cpu"], strict=True):
+        assert torch.allclose(fast, exact, atol=1e-4)

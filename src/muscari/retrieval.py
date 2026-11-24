@@ -156,15 +156,16 @@ class SAEPooling(Module):
             keep = torch.ones(states.shape[0], dtype=torch.bool, device=device)
         else:
             batch_size, length, width = states.shape
-            attention = features["attention_mask"].to(device).bool()
+            attention = features["attention_mask"].to(device).long()
             # Counted from the first attended token, so that left padding is handled as well.
             positions = (attention.cumsum(dim=1) - 1).reshape(-1)
             rows = torch.arange(batch_size, device=device).repeat_interleave(length)
-            keep = attention.reshape(-1)
+            keep = attention.reshape(-1) > 0
             states = states.reshape(-1, width)
 
         special = torch.tensor(self.special_token_ids, dtype=torch.long, device=device)
-        keep = keep & ~torch.isin(features["input_ids"].to(device).reshape(-1), special)
+        input_ids = features["input_ids"].to(device).reshape(-1)
+        keep = keep & ~(input_ids.unsqueeze(1) == special).any(dim=1)
 
         prompt_length = features.get("prompt_length") if self.exclude_prompt else None
         if prompt_length is not None:
@@ -198,11 +199,16 @@ class SAEPooling(Module):
                     keys.append(chunk_rows[tokens] * self.num_latents + latents)
                     values.append(pre[tokens, latents])
 
-            pooled = states.new_zeros(batch_size * self.num_latents)
+            # The maximum per (text, latent) pair is taken on the CPU when the device is Apple MPS,
+            # whose scatter does not cover this reduction in every supported PyTorch release.
+            pool_device = torch.device("cpu") if states.device.type == "mps" else states.device
+            pooled = torch.zeros(batch_size * self.num_latents, device=pool_device)
             if keys:
-                activations = torch.log1p(F.relu(torch.cat(values)))
-                pooled = pooled.scatter_reduce(0, torch.cat(keys), activations, reduce="amax", include_self=True)
-            pooled = pooled.view(batch_size, self.num_latents)
+                activations = torch.log1p(F.relu(torch.cat(values))).to(pool_device)
+                pooled = pooled.scatter_reduce(
+                    0, torch.cat(keys).to(pool_device), activations, reduce="amax", include_self=True
+                )
+            pooled = pooled.view(batch_size, self.num_latents).to(states.device)
             if self.masked_latents:
                 mask = torch.ones(self.num_latents, dtype=pooled.dtype, device=pooled.device)
                 mask[self.masked_latents] = 0

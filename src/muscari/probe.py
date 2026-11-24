@@ -69,12 +69,15 @@ def group_reranking_rows(
     sample. Queries without a relevant candidate cannot be scored and are left out.
 
     Raises:
-        ValueError: if no query with a relevant candidate is found.
+        ValueError: if a column is missing or no query with a relevant candidate is found.
     """
     key_column = group_column or query_column
+    needed = {key_column, query_column, passage_column, label_column}
     grouped: dict[Any, tuple[str, list[str], list[int]]] = {}
 
     for row in rows:
+        if missing := sorted(needed - set(row)):
+            raise ValueError(f"The data has no column {missing}; it has {sorted(row)}.")
         key = row[key_column]
         if key not in grouped:
             if max_queries is not None and len(grouped) >= max_queries:

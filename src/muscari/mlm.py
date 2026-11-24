@@ -129,19 +129,20 @@ def mlm_loss_recovered(
             total += F.cross_entropy(logits[masked.to(device)].float(), labels.to(device), reduction="sum").item()
         return total
 
-    state_sum = torch.zeros(sae.d_in, device=device, dtype=torch.float64)
+    # Summed on the CPU in float64: Apple MPS has no float64.
+    state_sum = torch.zeros(sae.d_in, dtype=torch.float64)
     state_count = 0
 
     def accumulate(states: torch.Tensor) -> None:
         nonlocal state_count
-        state_sum.add_(states.double().sum(dim=0))
+        state_sum.add_(states.sum(dim=0).cpu().double())
         state_count += states.shape[0]
 
     sae = sae.to(device)
     masked_tokens = sum(int(masked.sum()) for *_, masked, _ in batches)
     clean = loss(None, accumulate) / masked_tokens
     spliced = loss(sae.forward) / masked_tokens
-    mean_state = (state_sum / state_count).float()
+    mean_state = (state_sum / state_count).float().to(device)
     ablated = loss(lambda states: mean_state.expand_as(states)) / masked_tokens
 
     return {

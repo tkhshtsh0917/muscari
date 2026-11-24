@@ -64,8 +64,10 @@ def test_rows_are_grouped_per_query():
     assert group_reranking_rows(rows, **columns) == examples  # the query text identifies the query
     assert group_reranking_rows(rows, **columns, max_queries=1) == examples[:1]
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="relevant candidate"):
         group_reranking_rows(rows[3:4], **columns)
+    with pytest.raises(ValueError, match="no column"):
+        group_reranking_rows(rows, **{**columns, "label_column": "relevance"})
 
 
 def test_pooled_vectors_match_a_manual_computation(source, tmp_path):
