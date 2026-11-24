@@ -6,7 +6,7 @@
 
 muscariは、[ruri-v3](https://huggingface.co/cl-nagoya/ruri-v3-310m)のような凍結したテキストエンコーダにテキストを通し、本文トークンごとの隠れ状態でTop-K SAEを学習します。得られるのは数万本の方向からなる辞書です。検索モデルは、トークナイザの語彙の代わりにこの方向の上でクエリと文書を採点できます。SAE-SPLADEやSPLAREの考え方です。
 
-現在は初期版（`0.1.0.dev0`）で、SAEの学習・書き出し・評価までを扱います。SAEを使った検索学習はまだ含まれていません。[今後の予定](#今後の予定)を参照してください。
+現在は初期版（`0.1.0.dev0`）です。SAEの学習・書き出し・評価と、書き出したSAEを疎検索のエンコーダにするSentence Transformers向けのヘッドを扱います。このヘッドで検索モデルを学習したことは、まだありません。[今後の予定](#今後の予定)を参照してください。
 
 ## 専用のツールにした理由
 
@@ -25,9 +25,12 @@ pip install "git+https://github.com/tkhshtsh0917/muscari.git"
 
 # SAELensバックエンドも使う場合
 pip install "muscari[saelens] @ git+https://github.com/tkhshtsh0917/muscari.git"
+
+# Sentence Transformers向けの検索ヘッドも使う場合
+pip install "muscari[retrieval] @ git+https://github.com/tkhshtsh0917/muscari.git"
 ```
 
-Python 3.11以降、PyTorch 2.6以降、Transformers 4.48以降が必要です。開発環境は[CONTRIBUTING.ja.md](CONTRIBUTING.ja.md)を参照してください。
+Python 3.11以降、PyTorch 2.6以降、Transformers 4.48以降が必要です。検索ヘッドにはSentence Transformers 6.3以降が必要で、こちらはTransformers 5を要求します。開発環境は[CONTRIBUTING.ja.md](CONTRIBUTING.ja.md)を参照してください。
 
 ## クイックスタート
 
@@ -125,6 +128,46 @@ exported = load_sae("runs/sae", device=source.device)
 hidden = source.encode_batch(["検索文書: "], ["名古屋の求人"])  # (トークン数, d_in)
 features = exported.encode(hidden)  # (トークン数, 潜在数)。非ゼロはトークンあたりk個
 ```
+
+## 疎検索のヘッド
+
+`muscari.retrieval`は、書き出したSAEをエンコーダに載せ、[Sentence Transformers](https://sbert.net/)の`SparseEncoder`にします。ヘッドの`SAEPooling`は、SPLADEモデルの言語モデルヘッドとプーリングの役割を担います。本文トークンの最終隠れ状態をSAEのエンコーダに通し、発火した潜在に`log1p`をかけ、トークン方向の最大値を取ります。潜在1個が出力の1次元になります。
+
+```python
+from muscari.retrieval import build_sparse_encoder
+
+model = build_sparse_encoder(
+    "runs/ruri-v3-310m-sae",
+    query_prompt="検索クエリ: ",
+    document_prompt="検索文書: ",
+)
+queries = model.encode_query(["名古屋のエンジニア求人"])
+documents = model.encode_document(["名古屋市内の開発職を募集しています。", "東京の営業職です。"])
+scores = model.similarity(queries, documents)
+```
+
+学習には、`sentence_transformers.sparse_encoder`の損失、トレーナー、評価器をそのまま使えます。ヘッドを`trainable=True`で作らない限り、SAEは凍結したままです。
+
+```python
+from sentence_transformers.sparse_encoder import SparseEncoderTrainer
+from sentence_transformers.sparse_encoder.losses import SparseMultipleNegativesRankingLoss, SpladeLoss
+
+loss = SpladeLoss(
+    model,
+    SparseMultipleNegativesRankingLoss(model),
+    document_regularizer_weight=...,  # 要調整。このヘッドで検証した値はまだありません
+    query_regularizer_weight=...,
+)
+trainer = SparseEncoderTrainer(model=model, train_dataset=train_dataset, loss=loss)
+trainer.train()
+model.save("runs/ruri-v3-310m-sae-retriever")
+```
+
+保存したモデルは、muscariをインストールした環境で`SparseEncoder(path, trust_remote_code=True)`として読み込みます。Sentence Transformersは、自身の名前空間の外にあるモジュールクラスすべてにこの指定を求めます。
+
+ほぼすべてのテキストで活性のある潜在は、テキストを区別する役に立ちません。`inspect-sae`の`text_frequency`で見つけ、`build_sparse_encoder(..., head_kwargs={"masked_latents": [...]})`で出力から外せます。
+
+ヘッドは正しさを検証済みです。出力するベクトルは`probe-sae`が採点するベクトルと一致し、勾配は密な計算と一致します。小さなモデルで数ステップ学習すると、エンコーダが更新され、SAEは変わりません。このヘッドで検索モデルを学習したことは、まだありません。
 
 ## 出力ファイル
 
@@ -249,8 +292,8 @@ features = exported.encode(hidden)  # (トークン数, 潜在数)。非ゼロ�
 
 ## 今後の予定
 
-- 書き出したSAEをエンコーダに載せ、疎検索のヘッドとして使うSentence Transformersモジュールと、それを使った検索学習。
-- ruri-v3での基準となる学習と、再構成・検索の測定結果。
+- 潜在65,536個・10億トークンでの基準となる学習と、再構成・プローブの測定結果。
+- 検索ヘッドを使った検索学習と、語彙型のSPLADEモデルとの比較。
 - ストリーミングデータセットへの対応。
 
 ## 謝辞

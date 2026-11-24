@@ -10,7 +10,7 @@
 | 対象環境 | 1プロセス・1デバイス（CPU、CUDA、Apple MPS）。どの環境で何を実行したかは[検証状況](README.ja.md#検証状況)を参照 |
 | Python | 開発用の版は`.python-version`、対応する最小の版は`pyproject.toml` |
 | ツール | miseが`mise.toml`でuvとBetterleaksの版を固定 |
-| 依存関係 | 実行時の範囲と`saelens`の追加依存は`pyproject.toml`。開発ツールは`dev`グループ |
+| 依存関係 | 実行時の範囲と、`saelens`・`retrieval`の追加依存は`pyproject.toml`。開発ツールは`dev`グループ |
 | 再現性 | `uv.lock`が開発とCIの主環境を固定 |
 | 品質 | Ruffの整形とlint、mypy、pytest、パッケージビルド、公開内容とライセンスの監査、Betterleaks |
 | 文書 | 英語と日本語のREADME、設計ガイド、例のガイド、この文書 |
@@ -33,7 +33,7 @@ mise run setup
 mise run check
 ```
 
-`setup`は、ロックされた依存関係、`saelens`の追加依存、`dev`グループをインストールします。`check`は整形、lint、mypy、テスト、パッケージビルド、監査を`uv run --frozen --no-sync`で実行するので、依存関係の解決や更新は起こりません。依存関係を意図して変える場合は、`pyproject.toml`を編集し、`mise exec -- uv lock`を実行して差分を確認してから、setupとcheckを実行します。`mise run format`は整形を適用します。
+`setup`は、ロックされた依存関係、`saelens`と`retrieval`の追加依存、`dev`グループをインストールします。`check`は整形、lint、mypy、テスト、パッケージビルド、監査を`uv run --frozen --no-sync`で実行するので、依存関係の解決や更新は起こりません。依存関係を意図して変える場合は、`pyproject.toml`を編集し、`mise exec -- uv lock`を実行して差分を確認してから、setupとcheckを実行します。`mise run format`は整形を適用します。
 
 CIの主ジョブは、同じロック済みのsetupとcheckを実行します。別の互換性ジョブでは、Python 3.11で対応範囲の最も古い版（SAELensなし）を、Python 3.13で最新の版を解決し、インストールされた版を記録してテストを実行します。ActionsはコミットSHAで固定しています。SHAとバージョンのコメントは一緒に更新してください。
 
@@ -47,7 +47,7 @@ mise exec -- env HF_HUB_OFFLINE=0 uv run --frozen --no-sync muscari train-sae ..
 
 ## テスト
 
-`tests/`直下のテストは、ランダムに初期化した2層のBERTと合成した活性でライブラリを確認します。確認しているのは数値計算とインターフェースです。疎な逆伝播を密な自動微分・数値微分と比較し、チェックポイントからの再開が正確であること、書き出しがSAELens自身の推論モデルと一致すること、コマンドラインが最初から最後まで動くことを確かめます。`tests/tooling/`は開発用の監査を確認します。SAELensのテストは、追加依存がない場合はスキップされます。
+`tests/`直下のテストは、ランダムに初期化した2層のBERTと合成した活性でライブラリを確認します。確認しているのは数値計算とインターフェースです。疎な逆伝播を密な自動微分・数値微分と比較し、チェックポイントからの再開が正確であること、書き出しがSAELens自身の推論モデルと一致すること、コマンドラインが最初から最後まで動くことを確かめます。`tests/tooling/`は開発用の監査を確認します。SAELensのテストと検索ヘッドのテストは、それぞれの追加依存がない場合はスキップされます。
 
 PyTorchがCUDAまたはApple MPSを使えるマシンでは、ハードウェアのテストも実行してください。
 

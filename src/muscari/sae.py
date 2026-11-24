@@ -202,6 +202,30 @@ class _SparseEncode(torch.autograd.Function):
         return grad_x, grad_weight, grad_bias if need_bias else None, grad_b_dec, None, None, None
 
 
+def sparse_topk(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    k: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """The ``k`` largest entries of ``x @ weight.T + bias`` per row and the columns they sit in.
+
+    ``x`` is ``(batch, d_in)`` and ``weight`` is ``(num_latents, d_in)``. The values are returned
+    before any ReLU. Gradients reach ``x``, ``weight`` and ``bias`` through the selected entries
+    only, so the dense ``(batch, num_latents)`` product is never kept for the backward pass.
+    """
+    values, indices, _, _ = _SparseEncode.apply(
+        x,
+        weight,
+        bias,
+        x.new_zeros(x.shape[1]),
+        torch.empty(0, dtype=torch.long, device=x.device),
+        k,
+        0,
+    )
+    return values, indices
+
+
 class _SparseDecode(torch.autograd.Function):
     """``out[b] = sum_j values[b, j] * decoder[indices[b, j]]`` without a saved ``(batch, n, d)`` block.
 

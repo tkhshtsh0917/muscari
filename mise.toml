@@ -9,8 +9,8 @@ TOKENIZERS_PARALLELISM = "false"
 HF_HUB_OFFLINE = "1"
 
 [tasks.setup]
-description = "Install the exact development environment, including the SAELens backend"
-run = "uv sync --locked --extra saelens --group dev"
+description = "Install the exact development environment, including the SAELens backend and the retrieval head"
+run = "uv sync --locked --extra saelens --extra retrieval --group dev"
 
 [tasks.format]
 run = "uv run --frozen --no-sync ruff format src tests examples benchmarks scripts"

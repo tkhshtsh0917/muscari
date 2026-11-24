@@ -30,7 +30,7 @@ jobs:
             extras: "."
             constraints: "torch==2.6.0 transformers==4.48.0 datasets==3.0.0 safetensors==0.4.4"
           - python: "3.13"
-            extras: ".[saelens]"
+            extras: ".[saelens,retrieval]"
             constraints: ""
     env:
       OMP_NUM_THREADS: "1"

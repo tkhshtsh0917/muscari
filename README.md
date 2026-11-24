@@ -6,7 +6,7 @@ Sparse autoencoders for text encoders: train SAEs on encoder hidden states and u
 
 muscari takes a frozen text encoder such as [ruri-v3](https://huggingface.co/cl-nagoya/ruri-v3-310m), runs your texts through it, and trains a Top-K sparse autoencoder (SAE) on the hidden state of every content token. The result is a dictionary of a few tens of thousands of directions. A retrieval model can then score queries and documents on those directions instead of on the tokenizer's vocabulary, which is the idea behind SAE-SPLADE and SPLARE.
 
-This is an early version (`0.1.0.dev0`). It covers SAE training, export and evaluation. Retrieval training on top of the SAE is planned and not included yet; see [Roadmap](#roadmap).
+This is an early version (`0.1.0.dev0`). It covers SAE training, export and evaluation, and a Sentence Transformers head that turns an exported SAE into a sparse encoder. No retrieval model has been trained with that head yet; see [Roadmap](#roadmap).
 
 ## Why a separate tool
 
@@ -25,9 +25,12 @@ pip install "git+https://github.com/tkhshtsh0917/muscari.git"
 
 # with the optional SAELens backend
 pip install "muscari[saelens] @ git+https://github.com/tkhshtsh0917/muscari.git"
+
+# with the Sentence Transformers retrieval head
+pip install "muscari[retrieval] @ git+https://github.com/tkhshtsh0917/muscari.git"
 ```
 
-It needs Python 3.11 or later, PyTorch 2.6 or later, and Transformers 4.48 or later. For development, see [CONTRIBUTING.md](CONTRIBUTING.md).
+It needs Python 3.11 or later, PyTorch 2.6 or later, and Transformers 4.48 or later. The retrieval head needs Sentence Transformers 6.3 or later, which in turn needs Transformers 5. For development, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Quickstart
 
@@ -125,6 +128,46 @@ exported = load_sae("runs/sae", device=source.device)
 hidden = source.encode_batch(["検索文書: "], ["名古屋の求人"])  # (tokens, d_in)
 features = exported.encode(hidden)  # (tokens, num_latents), k non-zero entries per token
 ```
+
+## Sparse retrieval head
+
+`muscari.retrieval` puts an exported SAE on top of its encoder as a [Sentence Transformers](https://sbert.net/) `SparseEncoder`. The head, `SAEPooling`, takes the place of the language-model head and pooling of a SPLADE model: the final hidden state of every content token goes through the SAE's encoder, the active latents are saturated with `log1p`, and the maximum over the tokens gives one dimension per latent.
+
+```python
+from muscari.retrieval import build_sparse_encoder
+
+model = build_sparse_encoder(
+    "runs/ruri-v3-310m-sae",
+    query_prompt="検索クエリ: ",
+    document_prompt="検索文書: ",
+)
+queries = model.encode_query(["名古屋のエンジニア求人"])
+documents = model.encode_document(["名古屋市内の開発職を募集しています。", "東京の営業職です。"])
+scores = model.similarity(queries, documents)
+```
+
+The model trains with the losses, trainer and evaluators of `sentence_transformers.sparse_encoder`. The SAE stays frozen unless the head is built with `trainable=True`:
+
+```python
+from sentence_transformers.sparse_encoder import SparseEncoderTrainer
+from sentence_transformers.sparse_encoder.losses import SparseMultipleNegativesRankingLoss, SpladeLoss
+
+loss = SpladeLoss(
+    model,
+    SparseMultipleNegativesRankingLoss(model),
+    document_regularizer_weight=...,  # to be tuned; no value has been validated with this head
+    query_regularizer_weight=...,
+)
+trainer = SparseEncoderTrainer(model=model, train_dataset=train_dataset, loss=loss)
+trainer.train()
+model.save("runs/ruri-v3-310m-sae-retriever")
+```
+
+A saved model loads with `SparseEncoder(path, trust_remote_code=True)` while muscari is installed. Sentence Transformers asks for that flag for every module class outside its own namespace.
+
+Latents that are active in nearly every text cannot tell texts apart. `inspect-sae` lists them by `text_frequency`, and `build_sparse_encoder(..., head_kwargs={"masked_latents": [...]})` removes them from the output.
+
+The head is tested for correctness: its vectors equal the ones `probe-sae` scores, its gradients equal a dense computation, and a few training steps on a tiny model update the encoder and leave the SAE unchanged. No retrieval model has been trained with it yet.
 
 ## What gets written
 
@@ -249,8 +292,8 @@ Not run yet: a full-size run of 65,536 latents and one billion tokens on any enc
 
 ## Roadmap
 
-- A Sentence Transformers module that puts an exported SAE on top of the encoder as a sparse retrieval head, followed by retrieval training.
-- A reference run on ruri-v3 with measured reconstruction and retrieval results.
+- A reference run of 65,536 latents and one billion tokens, with measured reconstruction and probe results.
+- Retrieval training with the head, and a comparison with a vocabulary-based SPLADE model.
 - Streaming datasets.
 
 ## Acknowledgements

@@ -10,7 +10,7 @@
 | Target environments | One process on one device: CPU, CUDA or Apple MPS. See [validation status](README.md#validation-status) for what has run where |
 | Python | Development version in `.python-version`; supported minimum in `pyproject.toml` |
 | Tools | mise pins uv and Betterleaks in `mise.toml` |
-| Dependencies | Runtime ranges and the `saelens` extra in `pyproject.toml`. Developer tools use the `dev` group |
+| Dependencies | Runtime ranges and the `saelens` and `retrieval` extras in `pyproject.toml`. Developer tools use the `dev` group |
 | Reproducibility | `uv.lock` pins the main development and CI environment |
 | Quality | Ruff formatting and lint, mypy, pytest, package build, public-content and license audit, Betterleaks |
 | Documentation | English and Japanese README, design guide, examples guide and this file |
@@ -33,7 +33,7 @@ mise run setup
 mise run check
 ```
 
-`setup` installs the locked dependencies, the `saelens` extra and the `dev` group. `check` runs formatting, lint, mypy, the tests, the package build and the audits with `uv run --frozen --no-sync`, so it never resolves or updates dependencies. For an intentional dependency change, edit `pyproject.toml`, run `mise exec -- uv lock`, review the diff, then run setup and check. `mise run format` applies formatting.
+`setup` installs the locked dependencies, the `saelens` and `retrieval` extras and the `dev` group. `check` runs formatting, lint, mypy, the tests, the package build and the audits with `uv run --frozen --no-sync`, so it never resolves or updates dependencies. For an intentional dependency change, edit `pyproject.toml`, run `mise exec -- uv lock`, review the diff, then run setup and check. `mise run format` applies formatting.
 
 The main CI job runs the same locked setup and check tasks. Separate compatibility jobs resolve the lowest supported versions on Python 3.11 without the SAELens extra, and the newest versions on Python 3.13, record what was installed and run the tests. Actions are pinned to commit SHAs; update the SHA and the version comment together.
 
@@ -47,7 +47,7 @@ Writing `HF_HUB_OFFLINE=0` in front of `mise exec` has no effect, because mise a
 
 ## Tests
 
-Tests at the root of `tests/` cover the library with a randomly initialised two-layer BERT and synthetic activations. They check numerics and interfaces: the sparse backward pass against dense autograd and numerical differentiation, exact checkpoint resumption, the export against SAELens' own inference model, and the command line end to end. `tests/tooling/` checks the development audits. The SAELens tests are skipped when the extra is not installed.
+Tests at the root of `tests/` cover the library with a randomly initialised two-layer BERT and synthetic activations. They check numerics and interfaces: the sparse backward pass against dense autograd and numerical differentiation, exact checkpoint resumption, the export against SAELens' own inference model, and the command line end to end. `tests/tooling/` checks the development audits. The SAELens tests and the retrieval-head tests are skipped when their extra is not installed.
 
 On a machine where PyTorch can use CUDA or Apple MPS, run the hardware tests as well:
 

@@ -6,7 +6,7 @@ This guide explains what muscari computes, why it is built this way, how it diff
 
 ## Scope
 
-SAE-based learned sparse retrieval replaces the vocabulary of a SPLADE-style model with the latents of a sparse autoencoder. Training such a retriever has two stages: first an SAE is trained to reconstruct the hidden states of the backbone, then the retriever is trained on top of it. muscari implements the first stage for encoder backbones and stops at an exported, evaluated SAE.
+SAE-based learned sparse retrieval replaces the vocabulary of a SPLADE-style model with the latents of a sparse autoencoder. Training such a retriever has two stages: first an SAE is trained to reconstruct the hidden states of the backbone, then the retriever is trained on top of it. muscari implements the first stage for encoder backbones, up to an exported and evaluated SAE, and supplies the head that the second stage trains on. The second stage itself runs in Sentence Transformers.
 
 ## Pipeline
 
@@ -200,6 +200,19 @@ Sparse scores tie often, for example at zero when a query and a passage share no
 Both need an SAE trained on `last_hidden_state`.
 
 
+### 9. Retrieval head (`muscari.retrieval`)
+
+SPLADE scores every vocabulary entry at every token with the language-model head, applies `log(1 + ReLU(.))` and pools with a maximum over the tokens. An SAE-based sparse retriever keeps this shape and swaps the vocabulary for the SAE's dictionary. `SAEPooling` is that swap as a Sentence Transformers module: it reads `token_embeddings` from the `Transformer` module, applies the SAE's encoder to the content tokens, keeps the selected latents, applies ReLU and `log1p`, and writes the maximum over the tokens of each text to `sentence_embedding`. Everything downstream, from `SpladeLoss` and the FLOPS regulariser to the trainer and the evaluators, works on that tensor and needs no change.
+
+- **Same tokens as in SAE training.** Padding and special tokens are left out, and so are the prompt's tokens when the model reports a prompt length. Sentence Transformers measures the prompt by tokenizing it on its own, while SAE training drops the tokens whose characters end inside the prefix. The two agree unless a token straddles the end of the prompt, where they can differ by one token.
+- **Frozen by default.** The SAE's encoder is stored as parameters that do not require gradients, so retrieval training changes only the transformer. This is the setting the Shizuku SAE card describes. `trainable=True` trains the SAE's encoder as well.
+- **Sparse backward pass.** Only `k` latents per token are selected, so the gradient with respect to the token states is a sum of `k` rows of the encoder matrix. The head reuses the function the trainer uses, which keeps the dense `(tokens, latents)` product inside the forward pass. It runs in float32 with autocast switched off, in chunks of tokens.
+- **Both input layouts.** Sentence Transformers either pads a batch or, with flash attention, packs it into one sequence without padding. The head handles both and returns the same vectors.
+- **Masked latents.** A latent that is active in nearly every text adds the same amount to every score. `masked_latents` zeroes chosen latents in the output. This does not free their slot among the `k` latents of a token; it only removes them from the index.
+- **No decoder.** Retrieval does not reconstruct, so the saved head holds only the encoder half.
+
+The head's vectors are the ones `probe-sae` ranks with, which the tests check on the same texts. What the tests cannot show is how well a model trained with the head retrieves.
+
 ## Differences from Gao et al.
 
 The paper was read in its arXiv v1 HTML form (Sections 2.1 to 2.4, Appendices A and B), and the [reference implementation](https://github.com/openai/sparse_autoencoder/tree/4965b941e9eb590b00b253a2c406db1e1b193942) in `sparse_autoencoder/train.py`.
@@ -315,6 +328,7 @@ A short run at the full recipe width (`cl-nagoya/ruri-v3-310m`, 65,536 latents, 
 - Apple MPS and CUDA: losses, gradients and activations agree with the CPU, and the runs above completed. On CUDA, bfloat16 autocast gave the same result as float32 to three decimals.
 - Prefix exclusion with the ruri-v3 tokenizer: by hand, on three texts.
 - Text-level statistics, latent statistics and ranking metrics: against hand-built cases.
+- The retrieval head: its vectors equal the probe's on the same texts; gradients equal a dense computation, for the token states and, when trainable, for the SAE's encoder; padded and unpadded batches agree; a saved model loads with the same head; three training steps on a tiny model update the transformer and leave the SAE unchanged.
 - The reranking probe and the loss recovered: an SAE that reconstructs exactly recovers 1; pooled vectors and replaced embeddings agree with a manual computation; the clean masked-language-model loss equals the model's own loss on the same masked batch.
 
 Except for the runs above, all of this uses a randomly initialised two-layer BERT or synthetic activations. See the [validation status](../README.md#validation-status) for the environments that ran.
@@ -322,7 +336,8 @@ Except for the runs above, all of this uses a randomly initialised two-layer BER
 ## What is not verified
 
 - SAE quality on a real encoder: reconstruction, dead and dense latents at 65,536 latents and one billion tokens.
-- That an SAE trained here improves retrieval when used as a sparse vocabulary.
+- That an SAE trained here improves retrieval when used as a sparse vocabulary. No retrieval model has been trained with the head.
+- The unpadded input layout of Sentence Transformers end to end. It needs flash attention; the head is tested on hand-built features in that layout.
 - AuxK on real activations.
 - A run of the full length on any device. The time estimates above are extrapolations.
 - The pooled, per-text figures, the per-latent listing, the reranking probe and the loss recovered on a real SAE. The code is tested against hand-built cases; no real dictionary has been measured with it yet.
