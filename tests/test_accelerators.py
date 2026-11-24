@@ -198,7 +198,8 @@ def test_retrieval_head_matches_the_cpu(device):
         head = SAEPooling(16, 128, k=4, special_token_ids=[0], trainable=True, token_chunk=5)
         head.load_state_dict(reference.state_dict())
         head.to(name)
-        inputs = states.to(name).requires_grad_(True)
+        # A fresh leaf on each device: on the CPU, ``to`` would hand back ``states`` itself.
+        inputs = states.clone().to(name).requires_grad_(True)
         features = {
             "token_embeddings": inputs,
             "input_ids": input_ids.to(name),
