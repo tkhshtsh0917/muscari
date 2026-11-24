@@ -6,7 +6,7 @@ Sparse autoencoders for text encoders: train SAEs on encoder hidden states and u
 
 muscari takes a frozen text encoder such as [ruri-v3](https://huggingface.co/cl-nagoya/ruri-v3-310m), runs your texts through it, and trains a Top-K sparse autoencoder (SAE) on the hidden state of every content token. The result is a dictionary of a few tens of thousands of directions. A retrieval model can then score queries and documents on those directions instead of on the tokenizer's vocabulary, which is the idea behind SAE-SPLADE and SPLARE.
 
-This is an early version (`0.1.0.dev0`). It covers SAE training, export and evaluation, and a Sentence Transformers head that turns an exported SAE into a sparse encoder. No retrieval model has been trained with that head yet; see [Roadmap](#roadmap).
+This is an early version (`0.1.0.dev0`). It covers SAE training, export and evaluation, and a Sentence Transformers head that turns an exported SAE into a sparse encoder. That head has been trained only on a small scale so far; see [Roadmap](#roadmap).
 
 ## Why a separate tool
 
@@ -169,7 +169,9 @@ A saved model loads with `SparseEncoder(path, trust_remote_code=True)` while mus
 
 Latents that are active in nearly every text cannot tell texts apart. `inspect-sae` lists them by `text_frequency`, and `build_sparse_encoder(..., head_kwargs={"masked_latents": [...]})` removes them from the output.
 
-The head is tested for correctness: its vectors equal the ones `probe-sae` scores, on a tiny model and on ruri-v3-30m with its real tokenizer; its gradients equal a dense computation; and a few training steps on a tiny model update the encoder and leave the SAE unchanged. No retrieval model has been trained with it yet.
+A first small-scale run on modernbert-ja-30m lifted nDCG@10 on 200 JQaRA queries from 0.37 to about 0.46 in 2,000 steps, in float32; bfloat16 autocast did clearly worse. A vocabulary-based SPLADE head trained with the same recipe collapsed, so the two heads have not been compared yet. Details are in the [design guide](docs/design.md#retrieval-training-on-a-small-scale).
+
+The head is tested for correctness: its vectors equal the ones `probe-sae` scores, on a tiny model and on ruri-v3-30m with its real tokenizer; its gradients equal a dense computation; and a few training steps on a tiny model update the encoder and leave the SAE unchanged.
 
 ## What gets written
 
@@ -277,11 +279,11 @@ The probe measures ranking with nothing trained. No metric here measures the qua
 | --- | --- | --- |
 | GitHub Actions, Ubuntu 24.04 | the locked `mise run check` on Python 3.12; the tests with the lowest supported versions on Python 3.11 (PyTorch 2.6, Transformers 4.48, Datasets 3.0, safetensors 0.4.4); the tests with the newest versions, SAELens and Sentence Transformers on Python 3.13 | passed |
 | macOS 26.6, Apple M5 Pro, Python 3.12, PyTorch 2.15 | `mise run check`, including the hardware tests on MPS and Betterleaks | passed |
-| The same Mac, MPS | runs of 5 to 30 million tokens on `cl-nagoya/ruri-v3-30m` with both trainers, their per-text and per-latent statistics, the reranking probe on 200 JQaRA queries, the retrieval head against the probe, and the step benchmark | ran end to end; numbers in the [design guide](docs/design.md#trial-on-a-real-encoder) |
-| Google Colab, NVIDIA L4, Python 3.13, PyTorch 2.14 | the tests; loss and gradients on CUDA against the CPU; bfloat16 autocast; the step benchmark; a 5-million-token run in float32 and bfloat16 | passed; numbers in the design guide |
+| The same Mac, MPS | runs of 5 to 30 million tokens on `cl-nagoya/ruri-v3-30m` with both trainers, their per-text and per-latent statistics, the reranking probe on 200 JQaRA queries, the retrieval head against the probe, small-scale retrieval training with the SAE head, and the step benchmark | ran end to end; numbers in the [design guide](docs/design.md#trial-on-a-real-encoder) |
+| Google Colab, NVIDIA L4, Python 3.13, PyTorch 2.14 | the tests, including the hardware tests of the probe, the loss recovered and the retrieval head; loss and gradients on CUDA against the CPU; bfloat16 autocast; the step benchmark; a 5-million-token run in float32 and bfloat16; small-scale retrieval training of both heads | passed; numbers in the design guide |
 | Linux x86_64 CPU, Python 3.13, PyTorch 2.15 | formatting, lint, mypy, tests, package build, public-content audit, step benchmark | passed |
 
-Not run yet: a full-size run of 65,536 latents and one billion tokens on any encoder, the new code on CUDA, and retrieval training with the head. The reranking probe measures ranking with nothing trained. The automated tests use a randomly initialised two-layer BERT, which checks interfaces and numerics, not SAE quality. The runs on ruri-v3-30m use a small dictionary and one seed each.
+Not run yet: a full-size run of 65,536 latents and one billion tokens on any encoder, and retrieval training with the head beyond 2,000 steps on 30m-parameter encoders. The automated tests use a randomly initialised two-layer BERT, which checks interfaces and numerics, not SAE quality. The runs on ruri-v3-30m use a small dictionary and one seed each.
 
 ## Limitations
 
@@ -295,7 +297,7 @@ Not run yet: a full-size run of 65,536 latents and one billion tokens on any enc
 ## Roadmap
 
 - A reference run of 65,536 latents and one billion tokens, with measured reconstruction and probe results.
-- Retrieval training with the head, and a comparison with a vocabulary-based SPLADE model.
+- Retrieval training with the head at a useful scale, and a comparison with a vocabulary-based SPLADE model whose training is stabilised on the same encoder.
 - Streaming datasets.
 
 ## Acknowledgements

@@ -74,7 +74,11 @@ def build_parser() -> argparse.ArgumentParser:
     group.add_argument("--weight-decay", type=float, default=0.01)
     group.add_argument("--regularizer-weight", type=float, default=3.33e-5, help="FLOPS weight for both sides")
     group.add_argument("--regularizer-warmup", type=float, default=0.3, help="share of steps over which it rises")
-    group.add_argument("--bf16", action="store_true", help="bfloat16 autocast (CUDA)")
+    group.add_argument(
+        "--bf16",
+        action="store_true",
+        help="bfloat16 autocast (CUDA); it lowered the result of the SAE head clearly in one comparison",
+    )
     group.add_argument("--seed", type=int, default=42)
 
     group = parser.add_argument_group("evaluation")

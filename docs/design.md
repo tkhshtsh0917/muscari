@@ -361,6 +361,24 @@ A latent like the first one adds a similar amount to the score of every pair of 
 
 The retrieval head was checked on the same encoder with its real tokenizer. On three queries and four documents its vectors equal the probe's exactly. The prefix has four tokens, Sentence Transformers reports a prompt length of five including the leading special token, and the character-based rule of SAE training drops the same positions.
 
+### Retrieval training on a small scale
+
+`examples/train_retriever.py` with the defaults it documents: batch 16, one hard negative, 256 tokens, 2,000 steps, learning rate 2e-5 and a FLOPS weight of 3.33e-5 on both sides. The training data are the retrieval subsets of `cl-nagoya/ruri-v3-dataset-ft` without `jqara`, which may share passages with the evaluation. Each run is ranked on the same 200 JQaRA queries as the probe above, with a standard error near 0.02. The SAE on modernbert-ja-30m has 8,192 latents and was trained on 30 million tokens of the same data; trained again on the L4 it gave the same FVU (0.203) and masked-language-model loss recovered (0.837).
+
+| Encoder and head | Hardware | nDCG@10 before | nDCG@10 after | Active dimensions, query / passage | FLOPS |
+| --- | --- | ---: | ---: | ---: | ---: |
+| modernbert-ja-30m, SAE head | Apple M5 Pro, float32 | 0.371 | 0.459 | 113 / 220 | 46.0 |
+| modernbert-ja-30m, SAE head | NVIDIA L4, float32 | 0.372 | 0.467 | 126 / 247 | 54.3 |
+| modernbert-ja-30m, SAE head | NVIDIA L4, bfloat16 autocast | 0.372 | 0.400 | 102 / 166 | 42.4 |
+| ruri-v3-30m, SAE head (the 30-million-token `topk` SAE) | Apple M5 Pro, float32 | 0.473 | 0.467 | 70 / 124 | 28.8 |
+| modernbert-ja-30m, vocabulary head | NVIDIA L4, both precisions | 0.169 on 20 queries | collapsed | about 94,000 / 99,500 before training | about 92,600 before training |
+
+- **The SAE head trains stably.** On modernbert-ja-30m, 2,000 steps lift nDCG@10 from 0.37 to about 0.46 and cut the active dimensions of a passage from 915 to about 230. The two float32 runs, on different hardware, agree.
+- **bfloat16 autocast hurt the SAE head.** It ended at 0.400 against 0.459 and 0.467 in float32. The head itself computes in float32, so the difference comes from the encoder's hidden states, which the SAE was trained on in float32 and whose rounding changes which latents the Top-K selects. These are single runs, but the gap is more than three standard errors. Train the SAE head in float32.
+- **The vocabulary head collapsed with this recipe and encoder.** The language-model head of modernbert-ja-30m gives a positive logit for 43% of the vocabulary per token on average; its decoder bias, mean -3.6, does not change that much. After `log1p(ReLU)` and the maximum over a passage, about 99,500 of the 102,400 dimensions are active before training, scores run into the tens of thousands and the first losses are near 30,000. Within the first 100 to 200 steps every logit is pushed below zero and the gradient through the ReLU vanishes; this happened in float32 as well as bfloat16. The SAE head avoids this because its Top-K keeps 16 latents per token from the start.
+- **This is not yet a comparison of retrieval quality between the two heads.** The vocabulary head needs a stabilised start, such as a lower decoder bias, a smaller score scale or a gentler warm-up, and each departs from the plain SPLADE recipe. How published SPLADE models on this encoder family handle it was not checked.
+- **The SAE head on ruri-v3-30m became sparser without gaining accuracy.** ruri-v3-30m is already trained for retrieval, on data that includes `jqara`, and a short run with small batches leaves it no room to improve here.
+
 ### CUDA
 
 The 5-million-token `jsquad` run above, repeated on an NVIDIA L4 with seed 0, gave an FVU of 0.4406 in float32 and 0.4405 with bfloat16 autocast for the encoder and the SAE, against 0.441 on MPS. Throughput was about 55,000 and 76,000 tokens per second.
@@ -385,7 +403,7 @@ Except for the runs above, all of this uses a randomly initialised two-layer BER
 ## What is not verified
 
 - SAE quality on a real encoder: reconstruction, dead and dense latents at 65,536 latents and one billion tokens.
-- That an SAE trained here improves retrieval when used as a sparse vocabulary. No retrieval model has been trained with the head.
+- That an SAE trained here improves retrieval when used as a sparse vocabulary. The head has been trained only on a small scale, and the vocabulary-head baseline of the same recipe collapsed, so no comparison of retrieval quality exists yet.
 - The unpadded input layout of Sentence Transformers end to end. It needs flash attention; the head is tested on hand-built features in that layout.
 - AuxK on real activations.
 - A run of the full length on any device. The time estimates above are extrapolations.
