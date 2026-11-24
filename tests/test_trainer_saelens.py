@@ -65,6 +65,8 @@ def test_export_matches_the_native_inference_model(source, tmp_path, monkeypatch
     assert exported.config["activation"] == ("topk" if architecture == "topk" else "jumprelu")
     assert exported.config["trainer"] == f"saelens-{architecture}"
     assert exported.config["base_model"] == "tiny"
+    assert 0.0 <= exported.config["train_unused_frac"] <= 1.0
+    assert exported.config["train_unused_window_tokens"] == 59_904  # the whole run: 234 steps of 256
     assert evaluate_sae(exported, held_out)["fvu"] < 1.0
 
 

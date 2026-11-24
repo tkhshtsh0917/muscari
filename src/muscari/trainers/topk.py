@@ -116,6 +116,7 @@ class TopKTrainer:
         step: optimisation steps taken so far.
         tokens_seen: activations trained on so far.
         tokens_since_fired: per-latent count of tokens since the latent last fired.
+        step_seconds: wall-clock time spent in ``train_step`` so far.
     """
 
     def __init__(self, cfg: TopKTrainerConfig, d_in: int) -> None:
@@ -134,10 +135,22 @@ class TopKTrainer:
         self.tokens_since_fired = torch.zeros(cfg.num_latents, dtype=torch.long, device=self.device)
         self.step = 0
         self.tokens_seen = 0
+        self.step_seconds = 0.0
 
     def dead_mask(self) -> torch.Tensor:
         """Boolean ``(num_latents,)`` mask of the latents currently considered dead."""
         return self.tokens_since_fired > self.cfg.dead_after_tokens
+
+    def unused_frac(self, window_tokens: int = 10_000_000) -> float:
+        """Share of latents that did not fire during the last ``window_tokens`` training tokens.
+
+        When fewer tokens have been seen, the window is the whole run. Unlike a count on an
+        evaluation sample, this does not depend on how many tokens are evaluated.
+        """
+        window = min(window_tokens, self.tokens_seen)
+        if window == 0:
+            return 0.0
+        return (self.tokens_since_fired >= window).float().mean().item()
 
     def train_step(self, x: torch.Tensor) -> dict[str, float]:
         """Take one optimisation step on ``x`` ``(batch, d_in)`` and return its metrics.
@@ -146,6 +159,7 @@ class TopKTrainer:
         dictionary before this step; ``lr`` is the rate this step used.
         """
         cfg = self.cfg
+        started = time.perf_counter()
         x = x.to(self.device)
         if self.step == 0:
             self.sae.init_b_dec(x)
@@ -177,14 +191,16 @@ class TopKTrainer:
 
         self.step += 1
         self.tokens_seen += x.shape[0]
-        return {
+        metrics = {
             "step": self.step,
             "tokens": self.tokens_seen,
-            "fvu": out["fvu"].item(),
+            "fvu": out["fvu"].item(),  # reading the value also waits for the device
             "aux": out["aux"].item(),
             "dead_frac": dead.float().mean().item(),
             "lr": learning_rate,
         }
+        self.step_seconds += time.perf_counter() - started
+        return metrics
 
     def fit(
         self,

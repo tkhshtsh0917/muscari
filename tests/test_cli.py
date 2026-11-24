@@ -10,7 +10,7 @@ import torch
 from tiny import DOC_PREFIX, QUERY_PREFIX, make_rows, write_jsonl
 
 from muscari import load_sae
-from muscari.cli import load_rows, main
+from muscari.cli import default_eval_tokens, load_rows, main
 
 COLUMN_SPECS = [f"anc={QUERY_PREFIX}", f"pos={DOC_PREFIX}", f"neg={DOC_PREFIX}"]
 
@@ -47,6 +47,10 @@ def read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def config_tokens_trained(out: Path) -> int:
+    return int(read_json(out / "sae_config.json")["tokens_trained"])
+
+
 def test_training_writes_an_evaluated_sae_with_provenance(tiny_model_dir, data_file, tmp_path, capsys):
     out = tmp_path / "run"
     main(train_arguments(tiny_model_dir, data_file, out))
@@ -61,6 +65,17 @@ def test_training_writes_an_evaluated_sae_with_provenance(tiny_model_dir, data_f
     assert (config["num_latents"], config["k"], config["d_in"]) == (128, 4, 32)
     assert config["columns"] == {"anc": QUERY_PREFIX, "pos": DOC_PREFIX, "neg": DOC_PREFIX}
     assert config["layer"] == "last_hidden_state" and config["prefix_tokens_excluded"] is True
+
+    assert sum(metrics["tokens_encoded_by_prefix"].values()) == metrics["tokens_encoded"]
+    assert set(metrics["tokens_encoded_by_prefix"]) == {QUERY_PREFIX, DOC_PREFIX}
+    assert metrics["epochs_started"] >= 2  # 300 rows hold fewer than 20,000 tokens
+    assert 0.0 <= metrics["train_unused_frac"] <= 1.0
+    assert metrics["train_unused_window_tokens"] == config_tokens_trained(out)
+    assert metrics["encoder_seconds"] > 0 and metrics["sae_seconds"] > 0
+    assert metrics["wall_seconds"] >= metrics["encoder_seconds"]
+    assert sum(group["token_share"] for group in metrics["by_prefix"].values()) == pytest.approx(1.0)
+    assert sum(group["tokens"] for group in metrics["by_prefix"].values()) == metrics["eval_tokens"]
+    assert all(0 < group["fvu"] < 1.5 for group in metrics["by_prefix"].values())
 
     log_lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith('{"step"')]
     assert log_lines[-1]["step"] == 156
@@ -164,6 +179,43 @@ def test_evaluation_takes_encoder_settings_from_the_sae(tiny_model_dir, data_fil
     assert evaluated["fvu"] == pytest.approx(trained["fvu"], rel=1e-5)
     assert evaluated["l0"] == pytest.approx(trained["l0"])
     assert json.loads(capsys.readouterr().out) == evaluated
+
+
+def test_other_data_is_evaluated_in_full_by_default(tiny_model_dir, data_file, tmp_path, capsys):
+    out = tmp_path / "run"
+    main(train_arguments(tiny_model_dir, data_file, out))
+    capsys.readouterr()
+    other = write_jsonl(tmp_path / "other.jsonl", make_rows(100, seed=7))
+
+    main(
+        [
+            "eval-sae",
+            *("--sae", str(out)),
+            *("--model", str(tiny_model_dir)),
+            *("--data-files", str(other)),
+            *("--eval-tokens", "500"),
+            *("--device", "cpu"),
+        ]
+    )
+
+    # The SAE records a 10% holdout, but none of these texts were seen in training.
+    assert json.loads(capsys.readouterr().out)["part"] == "all"
+
+
+def test_saelens_metrics_have_no_sae_timing(tiny_model_dir, data_file, tmp_path):
+    pytest.importorskip("sae_lens")
+    out = tmp_path / "run"
+    main(train_arguments(tiny_model_dir, data_file, out, trainer="saelens"))
+
+    metrics = read_json(out / "metrics.json")
+    assert metrics["sae_seconds"] is None and metrics["encoder_seconds"] > 0
+    assert 0.0 <= metrics["train_unused_frac"] <= 1.0
+
+
+def test_default_evaluation_size_grows_with_the_dictionary():
+    assert default_eval_tokens(8_192) == 262_144
+    assert default_eval_tokens(1_024) == 200_000
+    assert default_eval_tokens(65_536) == 2_097_152
 
 
 def test_evaluation_part_can_be_overridden(tiny_model_dir, data_file, tmp_path, capsys):

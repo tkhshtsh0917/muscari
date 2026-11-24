@@ -30,3 +30,11 @@ def resolve_device(device: str | torch.device = "auto") -> torch.device:
     if resolved.type == "mps" and not torch.backends.mps.is_available():
         raise ValueError("MPS was requested but torch.backends.mps.is_available() is False.")
     return resolved
+
+
+def synchronize(device: torch.device) -> None:
+    """Wait for queued work on ``device`` to finish, so that wall-clock timings mean something."""
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    elif device.type == "mps":
+        torch.mps.synchronize()

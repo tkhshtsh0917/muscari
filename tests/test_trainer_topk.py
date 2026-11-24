@@ -103,6 +103,24 @@ def test_latents_die_after_the_token_window():
     assert trainer.train_step(batches[2])["dead_frac"] == pytest.approx(silent.float().mean().item())
 
 
+def test_unused_fraction_counts_latents_silent_over_the_window():
+    cfg = small_config(num_latents=512, aux_k=0)
+    trainer = TopKTrainer(cfg, d_in=16)
+    batches = sparse_dictionary_batches(2)
+
+    assert trainer.unused_frac() == 0.0  # nothing has been trained yet
+
+    trainer.train_step(batches[0])
+    trainer.train_step(batches[1])
+    silent_for_both = (trainer.tokens_since_fired == 512).float().mean().item()
+    silent_for_last = (trainer.tokens_since_fired >= 256).float().mean().item()
+
+    assert 0 < silent_for_both < silent_for_last
+    assert trainer.unused_frac() == pytest.approx(silent_for_both)  # the window is the whole run so far
+    assert trainer.unused_frac(window_tokens=256) == pytest.approx(silent_for_last)
+    assert trainer.step_seconds > 0
+
+
 def test_a_selected_latent_with_zero_activation_does_not_count_as_firing():
     cfg = small_config(num_latents=4, k=4, aux_k=0)
     trainer = TopKTrainer(cfg, d_in=16)

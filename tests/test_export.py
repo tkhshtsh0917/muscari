@@ -83,6 +83,9 @@ def test_evaluation_of_an_exact_sae(tmp_path):
     assert metrics["never_fired_frac"] == pytest.approx(1 / 8)  # the "negative x_0" latent
     assert metrics["max_frequency"] == pytest.approx(1.0)  # the "positive x_0" latent
     assert metrics["dense_frac"] == pytest.approx(7 / 8)
+    # The average latent fires on l0 / 8 = 50% of the tokens; only the silent one is below 5%.
+    assert metrics["rare_frac"] == pytest.approx(1 / 8)
+    assert metrics["median_frequency"] == pytest.approx(0.5, abs=0.05)
     assert metrics["eval_tokens"] == 1000
 
 

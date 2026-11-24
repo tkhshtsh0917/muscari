@@ -11,6 +11,7 @@ import argparse
 import itertools
 import json
 import sys
+import time
 from collections.abc import Iterable, Iterator, Sequence
 from pathlib import Path
 from typing import Any
@@ -21,7 +22,7 @@ from . import __version__
 from .activations import EncoderActivationSource, shuffled_batches
 from .data import SPLITS, TextColumn, iter_texts, repeat_texts
 from .devices import resolve_device
-from .export import CONFIG_NAME, evaluate_sae, load_sae, save_topk_sae
+from .export import CONFIG_NAME, ExportedSAE, evaluate_sae, load_sae, save_topk_sae
 
 _FILE_LOADERS = {".jsonl": "json", ".json": "json", ".parquet": "parquet", ".csv": "csv", ".txt": "text"}
 
@@ -78,7 +79,9 @@ def build_parser() -> argparse.ArgumentParser:
     _add_encoder_arguments(train, for_training=True)
     _add_data_arguments(train, for_training=True)
     train.add_argument("--holdout-pct", type=float, default=5.0, help="percent of distinct texts held out")
-    train.add_argument("--eval-tokens", type=int, default=200_000, help="held-out tokens used for evaluation")
+    train.add_argument(
+        "--eval-tokens", type=int, help="held-out tokens to evaluate; default: max(200000, 32 * latents)"
+    )
 
     group = train.add_argument_group("SAE")
     group.add_argument("--num-latents", type=int, default=65_536)
@@ -116,7 +119,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_data_arguments(evaluate, for_training=False)
     evaluate.add_argument("--holdout-pct", type=float, help="default: the value recorded with the SAE")
     evaluate.add_argument("--part", choices=SPLITS, help="default: holdout if a holdout percentage is set, else all")
-    evaluate.add_argument("--eval-tokens", type=int, default=200_000)
+    evaluate.add_argument("--eval-tokens", type=int, help="default: max(200000, 32 * latents)")
     return parser
 
 
@@ -181,6 +184,39 @@ def _print_json(record: dict[str, Any]) -> None:
     print(json.dumps(record, ensure_ascii=False), flush=True)
 
 
+def default_eval_tokens(num_latents: int) -> int:
+    """Enough tokens for rare latents to show up: at least 32 per latent, and at least 200,000."""
+    return max(200_000, 32 * num_latents)
+
+
+def evaluate_by_prefix(sae: ExportedSAE, groups: dict[str, torch.Tensor]) -> dict[str, Any]:
+    """Evaluate on all activations together and on each prefix (queries, documents) separately.
+
+    The per-prefix entries carry the group's own FVU, measured around the group's own mean, and
+    its share of the evaluated tokens.
+    """
+    total = sum(group.shape[0] for group in groups.values())
+    metrics: dict[str, Any] = dict(evaluate_sae(sae, torch.cat(list(groups.values()))))
+
+    metrics["by_prefix"] = {}
+    for prefix, group in groups.items():
+        group_metrics = evaluate_sae(sae, group)
+        metrics["by_prefix"][prefix] = {
+            "tokens": group.shape[0],
+            "token_share": group.shape[0] / total,
+            "fvu": group_metrics["fvu"],
+            "l0": group_metrics["l0"],
+        }
+    return metrics
+
+
+def _same_data(args: argparse.Namespace, config: dict[str, Any]) -> bool:
+    """Whether the data given to ``eval-sae`` is the data the SAE was trained on."""
+    if args.data_files:
+        return [_public_name(name) for name in args.data_files] == config.get("dataset")
+    return args.dataset == config.get("dataset") and (args.subsets or None) == (config.get("subsets") or None)
+
+
 def train_sae(args: argparse.Namespace) -> dict[str, Any]:
     """Run the ``train-sae`` subcommand and return the final metrics."""
     out = Path(args.out)
@@ -216,11 +252,19 @@ def train_sae(args: argparse.Namespace) -> dict[str, Any]:
             min_chars=args.min_chars,
         )
 
-    eval_activations = None
-    if args.holdout_pct > 0 and args.eval_tokens > 0:
-        eval_activations = source.collect(texts("holdout"), args.eval_tokens)
-    source.texts_seen = 0
-    source.tokens_seen = 0
+    started = time.perf_counter()
+    eval_tokens = default_eval_tokens(args.num_latents) if args.eval_tokens is None else args.eval_tokens
+    eval_groups = None
+    if args.holdout_pct > 0 and eval_tokens > 0:
+        eval_groups = source.collect_by_prefix(texts("holdout"), eval_tokens)
+    source.reset_counters()
+
+    epochs_started = 0
+
+    def train_epoch() -> Iterator[tuple[str, str]]:
+        nonlocal epochs_started
+        epochs_started += 1
+        return texts("train")
 
     provenance = {
         "muscari_version": __version__,
@@ -259,7 +303,7 @@ def train_sae(args: argparse.Namespace) -> dict[str, Any]:
         )
         trainer = TopKTrainer(topk_config, source.d_in)
 
-        train_texts: Iterator[tuple[str, str]] = repeat_texts(lambda: texts("train"))
+        train_texts: Iterator[tuple[str, str]] = repeat_texts(train_epoch)
         skipped_texts = 0
         if args.resume:
             if not (out / CHECKPOINT_NAME).is_file():
@@ -292,8 +336,11 @@ def train_sae(args: argparse.Namespace) -> dict[str, Any]:
                 **provenance,
                 "trainer": "topk",
                 "tokens_trained": trainer.tokens_seen,
+                "train_unused_frac": trainer.unused_frac(),
+                "train_unused_window_tokens": min(10_000_000, trainer.tokens_seen),
             },
         )
+        sae_seconds: float | None = trainer.step_seconds
     else:
         from .trainers.saelens import SAELensTrainerConfig, train_with_saelens
 
@@ -315,7 +362,7 @@ def train_sae(args: argparse.Namespace) -> dict[str, Any]:
             device=str(device),
         )
         batches = shuffled_batches(
-            source.stream(repeat_texts(lambda: texts("train"))),
+            source.stream(repeat_texts(train_epoch)),
             batch_tokens=args.batch_tokens,
             buffer_tokens=args.buffer_tokens,
             seed=args.seed,
@@ -330,13 +377,22 @@ def train_sae(args: argparse.Namespace) -> dict[str, Any]:
                 "tokens_trained": saelens_config.total_steps * args.batch_tokens,
             },
         )
+        sae_seconds = None  # SAELens does not report the time of its own steps
 
+    exported = load_sae(out, device)
     metrics: dict[str, Any] = {
         "texts_encoded": source.texts_seen,
         "tokens_encoded": source.tokens_seen,
+        "tokens_encoded_by_prefix": dict(source.tokens_by_prefix),
+        "epochs_started": epochs_started,
+        "train_unused_frac": exported.config.get("train_unused_frac"),
+        "train_unused_window_tokens": exported.config.get("train_unused_window_tokens"),
+        "wall_seconds": time.perf_counter() - started,
+        "encoder_seconds": source.encode_seconds,
+        "sae_seconds": sae_seconds,
     }
-    if eval_activations is not None:
-        metrics.update(evaluate_sae(load_sae(out, device), eval_activations))
+    if eval_groups is not None:
+        metrics.update(evaluate_by_prefix(exported, eval_groups))
 
     (out / "metrics.json").write_text(json.dumps(metrics, indent=2) + "\n")
     print(json.dumps(metrics, indent=2), flush=True)
@@ -363,7 +419,8 @@ def eval_sae(args: argparse.Namespace) -> dict[str, Any]:
         args.layer if args.layer is not None else (None if recorded_layer == "last_hidden_state" else recorded_layer)
     )
     holdout_pct = args.holdout_pct if args.holdout_pct is not None else float(config.get("holdout_pct", 0.0))
-    part = args.part or ("holdout" if holdout_pct > 0 else "all")
+    # Held-out texts only make sense for the data the SAE was trained on; other data is all new.
+    part = args.part or ("holdout" if holdout_pct > 0 and _same_data(args, config) else "all")
 
     rows = load_rows(
         dataset=args.dataset,
@@ -380,7 +437,8 @@ def eval_sae(args: argparse.Namespace) -> dict[str, Any]:
         exclude_prefix=not args.keep_prefix_tokens and bool(config.get("prefix_tokens_excluded", True)),
         model=model,
     )
-    activations = source.collect(
+    eval_tokens = default_eval_tokens(int(config["num_latents"])) if args.eval_tokens is None else args.eval_tokens
+    groups = source.collect_by_prefix(
         iter_texts(
             rows,
             columns,
@@ -388,11 +446,11 @@ def eval_sae(args: argparse.Namespace) -> dict[str, Any]:
             split=part,
             min_chars=args.min_chars,
         ),
-        args.eval_tokens,
+        eval_tokens,
     )
 
     metrics: dict[str, Any] = {"part": part, "holdout_pct": holdout_pct}
-    metrics.update(evaluate_sae(load_sae(sae_dir, source.device), activations))
+    metrics.update(evaluate_by_prefix(load_sae(sae_dir, source.device), groups))
     if args.out:
         Path(args.out).write_text(json.dumps(metrics, indent=2) + "\n")
     print(json.dumps(metrics, indent=2), flush=True)

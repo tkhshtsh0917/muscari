@@ -38,6 +38,9 @@ from ..sae import geometric_median
 
 ARCHITECTURES = ("topk", "batchtopk")
 
+# Latents that did not fire over this many of the last training tokens are reported as unused.
+UNUSED_WINDOW_TOKENS = 10_000_000
+
 
 @dataclass
 class SAELensTrainerConfig:
@@ -182,6 +185,12 @@ def train_with_saelens(
     )
     trained = trainer.fit()
 
+    # SAELens counts forward passes since a latent last fired; convert to the token window used
+    # by the topk trainer so that both report the same quantity.
+    window_tokens = min(UNUSED_WINDOW_TOKENS, cfg.total_steps * cfg.batch_tokens)
+    window_steps = max(1, window_tokens // cfg.batch_tokens)
+    unused_frac = (trainer.n_forward_passes_since_fired >= window_steps).float().mean().item()
+
     with tempfile.TemporaryDirectory() as temporary:
         trained.save_inference_model(temporary)
         return save_saelens_sae(
@@ -191,5 +200,7 @@ def train_with_saelens(
                 **(export_config or {}),
                 "trainer": f"saelens-{cfg.architecture}",
                 "b_dec_init": "geometric_median" if cfg.init_b_dec else "zero",
+                "train_unused_frac": unused_frac,
+                "train_unused_window_tokens": window_tokens,
             },
         )

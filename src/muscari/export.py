@@ -32,6 +32,10 @@ FORMAT_VERSION = 1
 # A latent that fires on more than this share of tokens is reported as "dense".
 DENSE_FREQUENCY = 0.1
 
+# A latent that fires less often than this fraction of the average latent is reported as
+# "rarely used". The average firing frequency of a latent is ``l0 / num_latents``.
+RARE_RELATIVE_FREQUENCY = 0.1
+
 
 def save_sae(
     out_dir: str | Path,
@@ -231,7 +235,10 @@ def evaluate_sae(
         ``fvu``: squared reconstruction error over the variance around the mean activation.
         ``l0``: mean number of active latents per token.
         ``never_fired_frac``: share of latents that never fire on these tokens.
+        ``rare_frac``: share of latents that fire less than a tenth as often as the average
+        latent (the average frequency is ``l0 / num_latents``); never-fired latents included.
         ``dense_frac``: share of latents that fire on more than 10% of the tokens.
+        ``median_frequency``: the firing frequency of the median latent.
         ``max_frequency``: the largest share of tokens any single latent fires on.
         ``eval_tokens``: number of activations evaluated.
 
@@ -261,11 +268,15 @@ def evaluate_sae(
         fire_counts += (features > 0).sum(dim=0)
 
     frequencies = fire_counts.float() / n_tokens
+    l0 = fire_counts.sum().item() / n_tokens
+    rare_below = RARE_RELATIVE_FREQUENCY * l0 / sae.num_latents
     return {
         "fvu": residual / max(total, 1e-12),
-        "l0": fire_counts.sum().item() / n_tokens,
+        "l0": l0,
         "never_fired_frac": (fire_counts == 0).float().mean().item(),
+        "rare_frac": (frequencies < rare_below).float().mean().item(),
         "dense_frac": (frequencies > DENSE_FREQUENCY).float().mean().item(),
+        "median_frequency": frequencies.median().item(),
         "max_frequency": frequencies.max().item(),
         "eval_tokens": n_tokens,
     }
