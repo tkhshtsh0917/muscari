@@ -10,6 +10,9 @@ The loss is a contrastive loss with in-batch negatives plus a FLOPS regulariser 
 documents whose weight rises quadratically from zero. Before and after training, the candidates
 of a reranking dataset are ranked by the dot product of the sparse vectors.
 
+Training saves a checkpoint every tenth of the steps. Started again with the same ``--out``, the
+script reuses the evaluation before training and continues from the last checkpoint.
+
     python examples/train_retriever.py --head sae --sae runs/sae \\
         --query-prompt "検索クエリ: " --document-prompt "検索文書: " \\
         --dataset cl-nagoya/ruri-v3-dataset-ft --subsets jsquad \\
@@ -24,7 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -144,16 +147,36 @@ def training_rows(rows: Iterable[Mapping[str, Any]], args: argparse.Namespace) -
     return Dataset.from_dict(columns)
 
 
-def _rows_of(embeddings: torch.Tensor) -> list[PooledText]:
-    """Split a sparse ``(texts, dimensions)`` tensor into one vector per text."""
-    embeddings = embeddings.cpu().coalesce()
-    rows, dimensions = embeddings.indices()
-    values = embeddings.values()
-    bounds = torch.searchsorted(rows.contiguous(), torch.arange(embeddings.shape[0] + 1))
-    return [
-        PooledText(dimensions[start:end], values[start:end].float(), torch.empty(0))
-        for start, end in zip(bounds[:-1].tolist(), bounds[1:].tolist(), strict=True)
-    ]
+def encode_sparse(
+    encode: Callable[..., Any],
+    texts: Sequence[str],
+    *,
+    batch_size: int = 32,
+    chunk: int = 256,
+) -> tuple[list[PooledText], int]:
+    """Encode ``texts`` and keep the non-zero entries of each vector, on the CPU.
+
+    The model returns dense vectors a chunk of texts at a time; they are reduced on the CPU, so
+    no sparse tensor is built on the accelerator, whose sparse support varies (Apple MPS), and a
+    vocabulary-sized output never exists for the whole collection at once.
+
+    Returns the vectors and the output dimension.
+    """
+    vectors: list[PooledText] = []
+    dimension = 0
+    for start in range(0, len(texts), chunk):
+        dense = encode(
+            list(texts[start : start + chunk]),
+            batch_size=batch_size,
+            convert_to_tensor=True,
+            convert_to_sparse_tensor=False,
+            save_to_cpu=True,
+        ).float()
+        dimension = int(dense.shape[1])
+        for row in dense:
+            indices = row.nonzero().flatten()
+            vectors.append(PooledText(indices, row[indices], torch.empty(0)))
+    return vectors, dimension
 
 
 def rerank(
@@ -170,11 +193,10 @@ def rerank(
     """
     queries = list(dict.fromkeys(example.query for example in examples))
     passages = list(dict.fromkeys(passage for example in examples for passage in example.passages))
-    query_embeddings = model.encode_query(queries, batch_size=batch_size)
-    query_vectors = dict(zip(queries, _rows_of(query_embeddings), strict=True))
-    passage_vectors = dict(zip(passages, _rows_of(model.encode_document(passages, batch_size=batch_size)), strict=True))
-
-    dimension = int(query_embeddings.shape[1])
+    encoded_queries, dimension = encode_sparse(model.encode_query, queries, batch_size=batch_size)
+    encoded_passages, _ = encode_sparse(model.encode_document, passages, batch_size=batch_size)
+    query_vectors = dict(zip(queries, encoded_queries, strict=True))
+    passage_vectors = dict(zip(passages, encoded_passages, strict=True))
     weights = torch.ones(dimension, dtype=torch.float64)
     generator = torch.Generator().manual_seed(seed)
     per_query: dict[str, list[float]] = {}
@@ -236,8 +258,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "regularizer_weight": args.regularizer_weight,
         "seed": args.seed,
     }
-    if examples:
+    before_path = out / "before.json"
+    if examples and before_path.exists():
+        result["before"] = json.loads(before_path.read_text(encoding="utf-8"))
+    elif examples:
         result["before"] = rerank(model, examples, batch_size=args.eval_batch_size, seed=args.seed)
+        before_path.write_text(json.dumps(result["before"], ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         print(json.dumps({"before": result["before"]}, ensure_ascii=False), flush=True)
 
     train_rows = load_rows(
@@ -274,7 +300,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             prompts={column: prompt for column, prompt in prompts.items() if prompt} or None,
             dataloader_drop_last=True,
             logging_steps=max(1, args.max_steps // 20),
-            save_strategy="no",
+            save_strategy="steps",
+            save_steps=max(1, args.max_steps // 10),
+            save_total_limit=1,
             report_to="none",
             seed=args.seed,
             use_cpu=args.device == "cpu",
@@ -283,8 +311,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         loss=loss,
         callbacks=[SpladeRegularizerWeightSchedulerCallback(loss, "quadratic", warmup_ratio=args.regularizer_warmup)],
     )
+    checkpoints = out / "checkpoints"
+    resume = checkpoints.is_dir() and any(path.name.startswith("checkpoint-") for path in checkpoints.iterdir())
     started = time.perf_counter()
-    trainer.train()
+    trainer.train(resume_from_checkpoint=True if resume else None)
+    result["resumed"] = resume
     result["train_seconds"] = time.perf_counter() - started
     result["train_rows"] = len(train_dataset)
     result["train_log"] = [entry for entry in trainer.state.log_history if "loss" in entry]

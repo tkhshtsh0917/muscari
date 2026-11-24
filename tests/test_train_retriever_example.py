@@ -83,6 +83,24 @@ def test_sae_head_starts_at_the_probe_result_and_trains(example, tiny_model_dir,
     assert (tmp_path / "out" / "model" / "modules.json").exists()
 
 
+def test_a_stopped_run_continues_from_its_checkpoint(example, tiny_model_dir, data, tmp_path, monkeypatch):
+    torch.manual_seed(42)
+    sae_dir = save_topk_sae(tmp_path / "sae", TopKSAE(HIDDEN_SIZE, 96, 4), {"max_length": 32})
+    out = tmp_path / "out"
+    args = arguments(example, "sae", tiny_model_dir, data, out, "--sae", str(sae_dir), "--max-steps", "10")
+    first = example.run(args)
+    assert not first["resumed"] and sorted(path.name for path in (out / "checkpoints").iterdir()) == ["checkpoint-10"]
+
+    calls = []
+    original = example.rerank
+    monkeypatch.setattr(example, "rerank", lambda *a, **k: calls.append(1) or original(*a, **k))
+    (out / "results.json").unlink()
+    again = example.run(args)
+
+    assert again["resumed"] and again["before"] == first["before"]
+    assert len(calls) == 1  # only the evaluation after training ran again
+
+
 def test_mlm_head_trains_with_the_same_recipe(example, tiny_mlm_dir, data, tmp_path):
     result = example.run(arguments(example, "mlm", tiny_mlm_dir, data, tmp_path / "out", "--negatives", "2"))
 
