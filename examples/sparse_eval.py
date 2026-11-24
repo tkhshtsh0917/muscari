@@ -42,8 +42,8 @@ from muscari.retrieval import build_sparse_encoder
 
 Cap = tuple[int | None, int | None]
 FULL: Cap = (None, None)
-# Modules that this project or Sentence Transformers itself provide; anything else is remote code.
-LOCAL_MODULE_PREFIXES = ("sentence_transformers.", "muscari.")
+# Modules that Sentence Transformers, this project or its examples provide; anything else is remote code.
+LOCAL_MODULE_PREFIXES = ("sentence_transformers.", "muscari.", "vocabulary_head.")
 
 
 # --------------------------------------------------------------------------------------- caps
@@ -384,11 +384,12 @@ def retrieval_data(
 def needs_remote_code(path: str) -> bool:
     """Whether a saved model names modules or architectures that this environment does not provide.
 
-    A local directory whose ``modules.json`` refers only to Sentence Transformers or this project
-    and whose ``config.json`` has no ``auto_map`` loads without running code from the model.
+    A local directory whose ``modules.json`` refers only to Sentence Transformers, this project or
+    its examples, that holds no Python file and whose ``config.json`` has no ``auto_map`` loads
+    without running code from the model.
     """
     directory = Path(path)
-    if not directory.is_dir():
+    if not directory.is_dir() or any(directory.rglob("*.py")):
         return True
     modules_file = directory / "modules.json"
     modules = json.loads(modules_file.read_text(encoding="utf-8")) if modules_file.exists() else []
