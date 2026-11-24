@@ -46,8 +46,10 @@ class SAEPooling(Module):
             prompt length. Sentence Transformers counts the tokens of the prompt on its own;
             where a token straddles the end of the prompt this can differ by one token from
             the character-based rule used when the SAE was trained.
-        special_token_ids: ids that are never pooled. Filled in from the tokenizer when the
-            module becomes part of a model.
+        special_token_ids: ids that are never pooled. Filled in when the module becomes part of
+            a model, with the tokens the tokenizer adds around a text: classifier, separator,
+            beginning, end and padding. Unknown and mask tokens can occur inside a text and were
+            content when the SAE was trained, so they are pooled.
         masked_latents: latents whose output is always zero, for example ones that are active
             in nearly every text and so cannot tell texts apart.
         trainable: train the SAE's encoder together with the transformer. The default keeps it
@@ -130,10 +132,11 @@ class SAEPooling(Module):
         return head
 
     def on_model_ready(self, model: Any) -> None:
-        """Take the special token ids from the model's tokenizer unless they were given."""
+        """Take the ids of the tokens that frame a text from the model's tokenizer unless they were given."""
         tokenizer = getattr(model, "tokenizer", None)
         if self.special_token_ids is None and tokenizer is not None:
-            self.special_token_ids = sorted(int(i) for i in tokenizer.all_special_ids)
+            framing = (getattr(tokenizer, f"{name}_token_id", None) for name in ("cls", "sep", "bos", "eos", "pad"))
+            self.special_token_ids = sorted({int(token_id) for token_id in framing if token_id is not None})
 
     def _content_tokens(self, features: dict[str, Any]) -> tuple[torch.Tensor, torch.Tensor, int]:
         """Return the states of the content tokens, the row of the text each belongs to, and the batch size."""

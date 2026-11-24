@@ -18,7 +18,8 @@ from sentence_transformers.sparse_encoder import SparseEncoder  # noqa: E402
 from muscari.retrieval import SAEPooling, build_sparse_encoder  # noqa: E402
 
 TEXTS = ["東京 求人 検索", "名古屋 営業", "在宅 勤務 経験 資格 正社員", "給与"]
-SPECIAL = [0, 1, 2, 3]
+SPECIAL = [0, 2, 3]  # padding, classifier and separator; the unknown token (1) is content
+UNKNOWN_WORDS = "未知語 東京 知らない言葉"
 
 
 @pytest.fixture
@@ -44,10 +45,11 @@ def test_encoding_matches_the_probe_pooling(tiny_model_dir, source, random_sae):
         random_sae, str(tiny_model_dir), query_prompt=QUERY_PREFIX, document_prompt=DOC_PREFIX, device="cpu"
     )
 
+    texts = [*TEXTS, UNKNOWN_WORDS]  # unknown tokens are pooled, as they were when the SAE was trained
     for encode, prefix in ((model.encode_query, QUERY_PREFIX), (model.encode_document, DOC_PREFIX)):
-        embeddings = encode(TEXTS, convert_to_sparse_tensor=False)
-        assert embeddings.shape == (len(TEXTS), 96)
-        for row, vector in zip(embeddings, pool_texts(source, random_sae, prefix, TEXTS), strict=True):
+        embeddings = encode(texts, convert_to_sparse_tensor=False)
+        assert embeddings.shape == (len(texts), 96)
+        for row, vector in zip(embeddings, pool_texts(source, random_sae, prefix, texts), strict=True):
             expected = torch.zeros(96)
             expected[vector.indices] = vector.values
             assert torch.allclose(row, expected, atol=1e-5)
