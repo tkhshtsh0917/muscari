@@ -17,6 +17,32 @@ def test_column_spec_keeps_the_prefix_verbatim():
         TextColumn.parse("=prefix")
 
 
+def test_column_spec_can_label_the_kind_of_text():
+    assert TextColumn.parse("anc:query=") == TextColumn("anc", "", "query")
+    assert TextColumn.parse("anc:query") == TextColumn("anc", "", "query")
+    assert TextColumn.parse("pos:document=passage: a:b") == TextColumn("pos", "passage: a:b", "document")
+    assert TextColumn.parse("anc=検索クエリ: ").label is None  # a colon in the prefix is not a label
+
+    assert TextColumn("anc", QUERY_PREFIX).kind == QUERY_PREFIX
+    assert TextColumn("anc", QUERY_PREFIX, "query").kind == "query"
+
+    with pytest.raises(ValueError):
+        TextColumn.parse("anc:=prefix")
+    with pytest.raises(ValueError):
+        TextColumn.parse(":query=prefix")
+
+
+def test_labelled_columns_yield_their_label_and_are_deduplicated_per_kind():
+    rows = [{"anc": "東京 求人", "pos": "東京 求人", "neg": ["東京 求人", "名古屋 営業"]}]
+    columns = [TextColumn("anc", "", "query"), TextColumn("pos", "", "document"), TextColumn("neg", "", "document")]
+
+    assert list(iter_texts(rows, columns)) == [
+        ("query", "東京 求人"),
+        ("document", "東京 求人"),
+        ("document", "名古屋 営業"),
+    ]
+
+
 def test_split_is_disjoint_deduplicated_and_decided_by_content():
     rows = make_rows(50) * 2  # every row appears twice
 

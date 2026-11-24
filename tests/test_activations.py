@@ -134,6 +134,33 @@ def test_encode_texts_reports_tokens_per_text_and_counts_by_prefix(source):
     )
 
 
+def test_labels_stand_for_their_prefix_and_split_the_counts(tiny_model_dir, source):
+    labelled = EncoderActivationSource.from_pretrained(
+        str(tiny_model_dir),
+        device="cpu",
+        prefixes={"query": QUERY_PREFIX, "title": DOC_PREFIX, "body": DOC_PREFIX},
+    )
+    texts = ["東京 求人", "名古屋 営業 経理", "在宅 勤務"]
+
+    batch = labelled.encode_texts(["query", "title", "body"], texts)
+    expected = source.encode_texts([QUERY_PREFIX, DOC_PREFIX, DOC_PREFIX], texts)
+
+    assert torch.equal(batch.activations, expected.activations)
+    assert batch.tokens_per_text.tolist() == [2, 3, 2]  # the prefix tokens are still dropped
+    assert dict(labelled.tokens_by_prefix) == {"query": 2, "title": 3, "body": 2}
+    collected = labelled.collect_texts(zip(["title", "query"], texts, strict=False), 100)
+    assert sorted(text.prefix for text in collected) == ["query", "title"]
+
+
+def test_an_unlisted_kind_is_its_own_prefix(tiny_model_dir, source):
+    labelled = EncoderActivationSource.from_pretrained(str(tiny_model_dir), device="cpu", prefixes={"query": ""})
+
+    assert torch.equal(
+        labelled.encode_batch([DOC_PREFIX, "query"], ["東京 求人", "名古屋"]),
+        source.encode_batch([DOC_PREFIX, ""], ["東京 求人", "名古屋"]),
+    )
+
+
 def test_collect_by_prefix_groups_activations_and_respects_the_cap(source):
     texts = list(iter_texts(make_rows(20), COLUMNS))
     queries = sum(len(text.split()) for prefix, text in texts if prefix == QUERY_PREFIX)

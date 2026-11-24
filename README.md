@@ -44,7 +44,7 @@ muscari train-sae \
   --out runs/ruri-v3-310m-sae
 ```
 
-`--columns` lists the dataset columns to read and the prefix the encoder expects for each. The defaults are 65,536 latents, `k = 16` and one billion tokens, the values reported on the [model card of the SAE used by Shizuku](https://huggingface.co/mahiyama/modernbert-ja-310m-sae). For a first look, shrink the run with `--num-latents`, `--total-tokens` and a smaller model such as `cl-nagoya/ruri-v3-30m`.
+`--columns` lists the dataset columns to read and the prefix the encoder expects for each. Statistics are reported per prefix, which separates queries from documents. For an encoder that takes no prefix, label the columns instead: `--columns "anc:query=" "pos:document=" "neg:document="`. The defaults are 65,536 latents, `k = 16` and one billion tokens, the values reported on the [model card of the SAE used by Shizuku](https://huggingface.co/mahiyama/modernbert-ja-310m-sae). For a first look, shrink the run with `--num-latents`, `--total-tokens` and a smaller model such as `cl-nagoya/ruri-v3-30m`.
 
 The same activations through SAELens:
 
@@ -158,7 +158,7 @@ The decoder bias is folded into the encoder bias, so encoding is one affine map:
 | `rare_frac` | share of latents that fire less than a tenth as often as the average latent |
 | `dense_frac` | share of latents that fire on more than 10% of the tokens |
 | `median_frequency`, `max_frequency` | firing frequency of the median latent and of the most frequent one |
-| `by_prefix` | token share, `fvu` and `l0` separately for each prefix, that is for queries and documents |
+| `by_prefix` | token share, `fvu` and `l0` separately for each prefix, that is for queries and documents. Where columns carry labels, the labels take the place of the prefixes here and below |
 
 A sparse index does not store tokens. It stores one vector per query or document, pooled over the tokens with a maximum, and pays for every non-zero dimension. `text_level` describes the dictionary after that pooling, where a latent counts as active in a text if it fires on at least one token:
 

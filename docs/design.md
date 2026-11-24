@@ -23,6 +23,7 @@ A row is a mapping. Each requested column is paired with the prefix the encoder 
 - **Deduplication.** Retrieval datasets repeat passages heavily, because the same passage serves as a negative for many queries. Exact repeats of `(prefix, text)` are dropped so that frequent negatives are not over-weighted. This keeps one 64-bit hash per distinct text in memory.
 - **Holdout by content.** A text belongs to the held-out part when a hash of the text itself falls below the requested percentage. The decision does not depend on the row or the column, so a passage cannot appear on both sides. Splitting by row would leak shared negatives into the evaluation.
 - **Epochs.** When the source is exhausted it restarts, and deduplication restarts with it.
+- **Kinds of text.** Every text carries its kind, and all statistics are reported per kind. By default the kind is the prefix, which separates queries from documents for encoders such as ruri-v3. An encoder without prefixes, such as a masked language model, gives every text the same empty prefix. A column can then carry a label (`name:label=prefix`): the label names the kind, the prefix is still what is prepended, and deduplication works per kind.
 
 ### 2. Activations (`muscari.activations`)
 

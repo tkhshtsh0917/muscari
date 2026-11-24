@@ -1,4 +1,4 @@
-"""Turn dataset rows into a stream of ``(prefix, text)`` pairs.
+"""Turn dataset rows into a stream of ``(kind, text)`` pairs.
 
 Rows are plain mappings. A column may hold a string or a list of strings; retrieval datasets
 often keep several hard negatives per row in one list column.
@@ -16,25 +16,40 @@ SPLITS = ("train", "holdout", "all")
 
 @dataclass(frozen=True)
 class TextColumn:
-    """A dataset column and the prefix the encoder expects for that kind of text."""
+    """A dataset column, the prefix the encoder expects for its texts, and what kind of text it holds.
+
+    Statistics are reported per kind of text, for example separately for queries and
+    documents. The prefix usually tells the kinds apart. An encoder that takes no prefix needs
+    a ``label`` instead, and so do two kinds that share a prefix.
+    """
 
     name: str
     prefix: str = ""
+    label: str | None = None
+
+    @property
+    def kind(self) -> str:
+        """The name the texts of this column are grouped under: the label, or else the prefix."""
+        return self.prefix if self.label is None else self.label
 
     @classmethod
     def parse(cls, spec: str) -> TextColumn:
-        """Parse ``name`` or ``name=prefix``.
+        """Parse ``name``, ``name=prefix``, ``name:label`` or ``name:label=prefix``.
 
         Everything after the first ``=`` is the prefix, verbatim, so a trailing space such as
-        the one in ``"query: "`` is kept.
+        the one in ``"query: "`` is kept. A column whose name contains ``:`` cannot be given
+        this way; construct the ``TextColumn`` directly.
 
         Raises:
-            ValueError: if the column name is empty.
+            ValueError: if the column name or a label announced by ``:`` is empty.
         """
-        name, separator, prefix = spec.partition("=")
+        head, separator, prefix = spec.partition("=")
+        name, colon, label = head.partition(":")
         if not name:
             raise ValueError(f"Column spec {spec!r} has no column name.")
-        return cls(name=name, prefix=prefix if separator else "")
+        if colon and not label:
+            raise ValueError(f"Column spec {spec!r} has an empty label.")
+        return cls(name=name, prefix=prefix if separator else "", label=label if colon else None)
 
 
 def _hash64(text: str) -> int:
@@ -62,12 +77,15 @@ def iter_texts(
     holdout_pct: float = 0.0,
     split: str = "train",
 ) -> Iterator[tuple[str, str]]:
-    """Yield ``(prefix, text)`` for every text in the requested columns.
+    """Yield ``(kind, text)`` for every text in the requested columns.
+
+    The kind is the column's prefix, or its label if it has one. An activation source prepends
+    a kind as the prefix unless it was told which prefix a label stands for.
 
     Args:
         rows: dataset rows. Missing columns and ``None`` cells are skipped.
-        columns: which columns to read and which prefix each one gets.
-        dedup: drop exact repeats of ``(prefix, text)``. Retrieval datasets repeat passages
+        columns: which columns to read, with the prefix and optional label of each.
+        dedup: drop exact repeats of ``(kind, text)``. Retrieval datasets repeat passages
             heavily (shared negatives), which would otherwise over-weight them. This keeps one
             64-bit hash per distinct text in memory.
         min_chars: skip texts shorter than this many characters.
@@ -100,12 +118,12 @@ def iter_texts(
                     continue
 
                 if dedup:
-                    key = _hash64(column.prefix + "\x00" + text)
+                    key = _hash64(column.kind + "\x00" + text)
                     if key in seen:
                         continue
                     seen.add(key)
 
-                yield column.prefix, text
+                yield column.kind, text
 
 
 def repeat_texts(

@@ -248,6 +248,48 @@ def test_inspection_lists_latents_with_readable_tokens(tiny_model_dir, data_file
     assert "wrote 128 latents to latents.jsonl" in captured.err
 
 
+def test_labels_split_the_statistics_of_an_encoder_without_prefixes(tiny_model_dir, data_file, tmp_path, capsys):
+    out = tmp_path / "run"
+    arguments = train_arguments(tiny_model_dir, data_file, out)
+    first = arguments.index("--columns") + 1
+    arguments[first : first + 3] = ["anc:query=", "pos:document=", "neg:document="]
+    main(arguments)
+    capsys.readouterr()
+
+    config = read_json(out / "sae_config.json")
+    metrics = read_json(out / "metrics.json")
+    assert config["columns"] == {"anc": "", "pos": "", "neg": ""}
+    assert config["labels"] == {"anc": "query", "pos": "document", "neg": "document"}
+    assert set(metrics["tokens_encoded_by_prefix"]) == set(metrics["by_prefix"]) == {"query", "document"}
+    assert {frozenset(entry["prefixes"]) for entry in metrics["text_level"]["flops"]} == {
+        frozenset({"query"}),
+        frozenset({"document"}),
+        frozenset({"query", "document"}),
+    }
+
+    main(
+        [
+            "eval-sae",
+            *("--sae", str(out)),
+            *("--model", str(tiny_model_dir)),
+            *("--data-files", str(data_file)),
+            *("--eval-tokens", "500"),
+            *("--device", "cpu"),
+        ]
+    )
+    again = json.loads(capsys.readouterr().out)
+    assert set(again["by_prefix"]) == {"query", "document"}  # the labels come from the SAE config
+
+
+def test_one_label_cannot_stand_for_two_prefixes(tiny_model_dir, data_file, tmp_path):
+    arguments = train_arguments(tiny_model_dir, data_file, tmp_path / "run")
+    first = arguments.index("--columns") + 1
+    arguments[first : first + 3] = [f"anc:text={QUERY_PREFIX}", f"pos:text={DOC_PREFIX}"]
+
+    with pytest.raises(SystemExit, match="different prefixes"):
+        main(arguments)
+
+
 def test_default_evaluation_size_grows_with_the_dictionary():
     assert default_eval_tokens(8_192) == 262_144
     assert default_eval_tokens(1_024) == 200_000

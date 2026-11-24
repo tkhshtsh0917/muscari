@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import time
 from collections import defaultdict
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import nullcontext
 from typing import Any, NamedTuple
 
@@ -36,7 +36,10 @@ class EncodedBatch(NamedTuple):
 
 
 class EncodedText(NamedTuple):
-    """Content-token activations of one text, on the CPU."""
+    """Content-token activations of one text, on the CPU.
+
+    ``prefix`` is the kind of the text: its prefix, or its label where labels are used.
+    """
 
     prefix: str
     activations: torch.Tensor
@@ -61,6 +64,10 @@ class EncoderActivationSource:
             ``token_embeddings``. An integer indexes ``hidden_states`` instead (0 is the
             embedding output).
         exclude_prefix: drop the tokens that lie entirely inside the prefix.
+        prefixes: the prefix to prepend for each label, for texts that arrive as
+            ``(label, text)``. A kind that is not listed is itself the prefix. With
+            ``{"query": "", "document": ""}`` an encoder without prefixes still gets its
+            statistics split into queries and documents.
         device: ``"auto"``, a device string or a ``torch.device``.
         amp_dtype: run the encoder under autocast with this dtype, for example
             ``torch.bfloat16`` on CUDA. Activations are always returned as float32.
@@ -69,7 +76,7 @@ class EncoderActivationSource:
         d_in: hidden size of the encoder, the input width of the SAE.
         texts_seen: number of texts encoded so far.
         tokens_seen: number of content-token activations returned so far.
-        tokens_by_prefix: the same count split by the prefix of the text.
+        tokens_by_prefix: the same count split by the kind of the text (its prefix or label).
         encode_seconds: wall-clock time spent tokenizing and running the encoder.
     """
 
@@ -82,6 +89,7 @@ class EncoderActivationSource:
         text_batch_size: int = 64,
         layer: int | None = None,
         exclude_prefix: bool = True,
+        prefixes: Mapping[str, str] | None = None,
         device: str | torch.device = "auto",
         amp_dtype: torch.dtype | None = None,
     ) -> None:
@@ -95,6 +103,7 @@ class EncoderActivationSource:
         self.text_batch_size = text_batch_size
         self.layer = layer
         self.exclude_prefix = exclude_prefix
+        self.prefixes = dict(prefixes or {})
         self.amp_dtype = amp_dtype
         self.d_in = int(model.config.hidden_size)
 
@@ -150,15 +159,17 @@ class EncoderActivationSource:
         return mask
 
     @torch.no_grad()
-    def encode_texts(self, prefixes: list[str], texts: list[str]) -> EncodedBatch:
+    def encode_texts(self, kinds: list[str], texts: list[str]) -> EncodedBatch:
         """Encode one batch and return its content-token activations.
 
-        A text may contribute zero rows, for example when it is empty.
+        ``kinds`` holds, for each text, the prefix to prepend, or a label listed in
+        ``prefixes``. A text may contribute zero rows, for example when it is empty.
 
         Raises:
-            ValueError: if ``prefixes`` and ``texts`` differ in length.
+            ValueError: if ``kinds`` and ``texts`` differ in length.
         """
         started = time.perf_counter()
+        prefixes = [self.prefixes.get(kind, kind) for kind in kinds]
         encoding = self.tokenizer(
             [prefix + text for prefix, text in zip(prefixes, texts, strict=True)],
             padding=True,
@@ -188,14 +199,14 @@ class EncoderActivationSource:
 
         self.texts_seen += len(texts)
         self.tokens_seen += activations.shape[0]
-        for prefix, count in zip(prefixes, tokens_per_text.tolist(), strict=True):
-            self.tokens_by_prefix[prefix] += count
+        for kind, count in zip(kinds, tokens_per_text.tolist(), strict=True):
+            self.tokens_by_prefix[kind] += count
         self.encode_seconds += time.perf_counter() - started
         return EncodedBatch(activations, tokens_per_text, encoding["input_ids"][mask])
 
-    def encode_batch(self, prefixes: list[str], texts: list[str]) -> torch.Tensor:
+    def encode_batch(self, kinds: list[str], texts: list[str]) -> torch.Tensor:
         """Encode one batch and return only the activations of ``encode_texts``."""
-        return self.encode_texts(prefixes, texts).activations
+        return self.encode_texts(kinds, texts).activations
 
     def stream(self, texts: Iterable[tuple[str, str]]) -> Iterator[torch.Tensor]:
         """Yield one activation tensor per forward pass.
@@ -213,15 +224,15 @@ class EncoderActivationSource:
         self,
         pool: list[tuple[str, str]],
     ) -> Iterator[tuple[EncodedBatch, list[str]]]:
-        """Yield ``(batch, prefixes)`` for each forward pass over ``pool`` that produced activations."""
-        pool.sort(key=lambda item: len(item[0]) + len(item[1]))
+        """Yield ``(batch, kinds)`` for each forward pass over ``pool`` that produced activations."""
+        pool.sort(key=lambda item: len(self.prefixes.get(item[0], item[0])) + len(item[1]))
 
         for start in range(0, len(pool), self.text_batch_size):
             chunk = pool[start : start + self.text_batch_size]
-            prefixes = [prefix for prefix, _ in chunk]
-            batch = self.encode_texts(prefixes, [text for _, text in chunk])
+            kinds = [kind for kind, _ in chunk]
+            batch = self.encode_texts(kinds, [text for _, text in chunk])
             if batch.activations.shape[0]:
-                yield batch, prefixes
+                yield batch, kinds
 
     def _pools(self, texts: Iterable[tuple[str, str]]) -> Iterator[list[tuple[str, str]]]:
         pool: list[tuple[str, str]] = []

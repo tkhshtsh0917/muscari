@@ -56,7 +56,10 @@ def _add_data_arguments(parser: argparse.ArgumentParser, *, for_training: bool) 
         "--columns",
         nargs="+",
         required=for_training,
-        help="columns to read, as name or name=prefix; .txt files provide the column 'text'",
+        help=(
+            "columns to read, as name, name=prefix or name:label=prefix; .txt files provide the column 'text'. "
+            "Statistics are grouped by prefix, or by label where one is given"
+        ),
     )
     group.add_argument("--min-chars", type=int, default=1, help="skip texts shorter than this")
     group.add_argument("--seed", type=int, default=42, help="seed for row order, shuffling and initialisation")
@@ -182,8 +185,23 @@ def _public_name(name: str) -> str:
     return Path(name).name if Path(name).exists() else name
 
 
+def _prefix_of_kind(columns: Sequence[TextColumn]) -> dict[str, str]:
+    """Map each kind of text to the prefix its columns prepend, which must be the same for all of them."""
+    prefixes: dict[str, str] = {}
+    for column in columns:
+        if prefixes.setdefault(column.kind, column.prefix) != column.prefix:
+            raise SystemExit(f"Columns labelled {column.kind!r} use different prefixes; give them different labels.")
+    return prefixes
+
+
 def _build_source(
-    args: argparse.Namespace, *, max_length: int, layer: int | None, exclude_prefix: bool, model: str
+    args: argparse.Namespace,
+    *,
+    max_length: int,
+    layer: int | None,
+    exclude_prefix: bool,
+    model: str,
+    columns: Sequence[TextColumn],
 ) -> EncoderActivationSource:
     return EncoderActivationSource.from_pretrained(
         model,
@@ -192,6 +210,7 @@ def _build_source(
         text_batch_size=args.text_batch_size,
         layer=layer,
         exclude_prefix=exclude_prefix,
+        prefixes=_prefix_of_kind(columns),
         device=args.device,
         amp_dtype=torch.bfloat16 if args.encoder_amp else None,
     )
@@ -259,6 +278,7 @@ def train_sae(args: argparse.Namespace) -> dict[str, Any]:
         layer=args.layer,
         exclude_prefix=not args.keep_prefix_tokens,
         model=args.model,
+        columns=columns,
     )
     print(f"muscari {__version__}: encoder on {device}, d_in={source.d_in}", file=sys.stderr, flush=True)
 
@@ -294,6 +314,7 @@ def train_sae(args: argparse.Namespace) -> dict[str, Any]:
         "subsets": None if args.data_files else args.subsets,
         "split": args.split,
         "columns": {column.name: column.prefix for column in columns},
+        "labels": {column.name: column.label for column in columns if column.label is not None},
         "prefix_tokens_excluded": not args.keep_prefix_tokens,
         "max_length": args.max_length,
         "holdout_pct": args.holdout_pct,
@@ -435,7 +456,8 @@ def _collect_for_sae(
     if args.columns:
         columns = [TextColumn.parse(spec) for spec in args.columns]
     elif config.get("columns"):
-        columns = [TextColumn(name, prefix) for name, prefix in config["columns"].items()]
+        labels = config.get("labels", {})
+        columns = [TextColumn(name, prefix, labels.get(name)) for name, prefix in config["columns"].items()]
     else:
         raise SystemExit("--columns is required: the SAE config records no columns.")
 
@@ -461,6 +483,7 @@ def _collect_for_sae(
         layer=layer,
         exclude_prefix=not args.keep_prefix_tokens and bool(config.get("prefix_tokens_excluded", True)),
         model=model,
+        columns=columns,
     )
     eval_tokens = default_eval_tokens(int(config["num_latents"])) if args.eval_tokens is None else args.eval_tokens
     texts = source.collect_texts(
