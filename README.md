@@ -243,7 +243,7 @@ These fields separate three things a latent can follow other than meaning: one t
 
 Reconstruction error does not say whether what the SAE loses matters. Two measurements put the SAE back into the encoder and look at what the encoder does with it.
 
-`probe-sae` reads a reranking dataset with one candidate passage per row and ranks the candidates of each query. `--benchmark jqara` reads the test split of [JQaRA](https://huggingface.co/datasets/hotchpotch/JQaRA); `--dataset` or `--data-files` with `--query-column`, `--passage-column`, `--label-column` and `--group-column` read any other. By default 300 queries are sampled, and every figure comes with its standard error over them (`ndcg@10_stderr`).
+`probe-sae` reads a reranking dataset with one candidate passage per row and ranks the candidates of each query. `--benchmark jqara` reads the test split of [JQaRA](https://huggingface.co/datasets/hotchpotch/JQaRA) (`--split dev` the development split) and, as the benchmark's own evaluator does, puts each passage's title in front of its text; `--without-title` leaves the title out, which is how the probe results in the design guide were measured. `--dataset` or `--data-files` with `--query-column`, `--passage-column`, `--label-column`, `--group-column` and `--title-column` read any other. By default 300 queries are sampled, and every figure comes with its standard error over them (`ndcg@10_stderr`).
 
 | Result | Meaning |
 | --- | --- |

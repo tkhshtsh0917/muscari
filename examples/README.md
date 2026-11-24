@@ -39,10 +39,13 @@ On an Apple M5 Pro with MPS this command took 200 seconds, including the downloa
 
 ## Retrieval training
 
-`train_retriever.py` trains a sparse retriever with Sentence Transformers and ranks the candidates of a reranking dataset before and after. It needs the `retrieval` extra. Two heads train with the same data, loss and schedule, so that they can be compared:
+`train_retriever.py` trains a sparse retriever with Sentence Transformers and evaluates it before and after. It needs the `retrieval` extra. Three heads train with the same data, loss and schedule, so that they can be compared:
 
-- `--head sae` uses the latents of an exported SAE as the vocabulary, through `muscari.retrieval`;
-- `--head mlm` uses the tokenizer's vocabulary through the language-model head, as SPLADE does. The encoder must still have that head.
+- `--head sae` uses the latents of an exported SAE as the vocabulary, through `muscari.retrieval`. The SAE encoder stays frozen unless `--trainable-sae` is given.
+- `--head vocab` uses the tokenizer's vocabulary through the language-model head (`vocabulary_head.py`). It pools exactly the tokens the SAE head pools, no framing tokens and no prompt tokens, so the two heads differ in their dictionary only. `--shift` subtracts a constant from the logits before ReLU and `--fan-out` keeps that many logits per token, the two changes SPARSEUP ([arXiv 2611.09680](https://arxiv.org/abs/2611.09680)) makes to start training sparse; `--shift auto` estimates the shift as the `--shift-quantile` (default 0.999) of the content-token logits of `--shift-texts` training documents. With no shift, no fan-out and every token pooled the head equals `SpladePooling`; the gradient of the fan-out reaches the kept logits only, which is this project's choice.
+- `--head mlm` is Sentence Transformers' `SpladePooling` unchanged, prompt and special tokens included.
+
+The encoder must still have its language-model head for `vocab` and `mlm`.
 
 ```bash
 python examples/train_retriever.py \
@@ -50,10 +53,46 @@ python examples/train_retriever.py \
   --query-prompt "検索クエリ: " --document-prompt "検索文書: " \
   --dataset cl-nagoya/ruri-v3-dataset-ft --subsets jsquad \
   --query-column anc --positive-column pos --negative-column neg \
-  --benchmark jqara --max-steps 1000 \
+  --eval-benchmark jqara --eval-split dev --max-steps 1000 \
   --out runs/ruri-v3-30m-retriever-trial
 ```
 
-The loss is a contrastive loss with in-batch negatives and one hard negative per query, plus a FLOPS regulariser on queries and documents whose weight rises quadratically from zero over the first 30% of the steps. The learning rate, the regulariser weight and that schedule are the ones the model card of [sae-splade-ja-310m](https://huggingface.co/mahiyama/sae-splade-ja-310m) states for its first training stage; the batch size, the length limit and the number of steps are small defaults and not that card's.
+The loss is a contrastive loss with in-batch negatives and one hard negative per query, plus a FLOPS regulariser on queries and documents whose weight rises quadratically from zero over the first 30% of the steps. The learning rate, the regulariser weight and that schedule are the ones the model card of [sae-splade-ja-310m](https://huggingface.co/mahiyama/sae-splade-ja-310m) states for its first training stage; the batch size, the length limit and the number of steps are small defaults and not that card's. `--mini-batch-size` encodes each batch in pieces with GradCache (`CachedSpladeLoss`), which gives the same gradients with less memory.
 
-The script writes `results.json` with nDCG@10, MRR@10, the active dimensions per query and passage and FLOPS, before and after training, and saves the model. For the evaluation, the query vectors stay on the device and the passages are encoded a chunk at a time and scored against them there; only the scores and per-dimension counts are kept. A vocabulary-sized output, which can be nearly dense before training, is never held for the whole collection, and no sparse tensor is built on the accelerator. Training saves a checkpoint every tenth of the steps; started again with the same `--out`, the script reuses the evaluation before training and continues from the last checkpoint. Before training, an SAE head gives the `sparse.plain` result of `muscari probe-sae` on the same queries. Train the SAE head in float32: with `--bf16` it ended clearly lower than two float32 runs. With `sbintuitions/modernbert-ja-30m` the vocabulary head starts nearly dense and collapses within a few hundred steps under these defaults. Both results are in the [design guide](../docs/design.md#retrieval-training-on-a-small-scale).
+Training saves a checkpoint every tenth of the steps; started again with the same `--out`, the script reuses the evaluation before training and continues from the last checkpoint. `results.json` holds the configuration of the head, the training log and both evaluations; the model is saved in `model/`. Before training, an SAE head gives the `sparse.plain` result of `muscari probe-sae` on the same queries. Train the SAE head in float32: with `--bf16` it ended clearly lower than two float32 runs. With `sbintuitions/modernbert-ja-30m` the unshifted vocabulary head starts nearly dense and collapses within a few hundred steps under these defaults. Both results are in the [design guide](../docs/design.md#retrieval-training-on-a-small-scale).
+
+## Evaluation
+
+`sparse_eval.py` evaluates any Sentence Transformers `SparseEncoder`: a model saved by `train_retriever.py`, an untrained SAE head (`--sae`), or a published sparse retriever. `train_retriever.py` runs the same evaluation with the options prefixed `--eval-`.
+
+```bash
+python examples/sparse_eval.py --model runs/ruri-v3-30m-retriever-trial/model \
+  --benchmark jqara --split test \
+  --retrieval mteb/MIRACLJaRetrievalLite mteb/JaCWIRRetrievalLite \
+  --caps full 64/400 32/256 --out runs/ruri-v3-30m-retriever-trial/eval.json
+```
+
+- Reranking ranks each query's own candidates. For JQaRA a passage is `"{title} {text}"`, as in the benchmark's own evaluator (`--without-title` drops the title); all queries of the split are used unless `--queries` draws a sample. The `dev` split serves for choosing settings, `test` for the final numbers.
+- Retrieval ranks a whole corpus in the MTEB layout (configurations `corpus`, `queries`, `qrels`, or a directory with those three `.jsonl` files) and reports nDCG@10, MRR@10 and recall@100. The corpus is streamed through the encoder and merged into a running top-100 per query, so neither the corpus vectors nor the full score matrix are kept.
+- `--caps QUERY/DOCUMENT` keeps the largest weights of each vector at inference time; `full` keeps them all. Every metric comes with the active dimensions per query and per document and the FLOPS, `sum_j p_q(j) p_d(j)`.
+
+Every result also holds the value of each query, keyed by its id. A published model whose modules are not part of Sentence Transformers needs `--trust-remote-code`, which runs code from its repository; read that code first. A local directory saved by these scripts loads without it, unless it contains Python files.
+
+`compare_runs.py` compares two arms on the same queries. Several result files per arm, for example one per training seed, are averaged per query first; the script reports both means, the difference, a 95% paired bootstrap interval over queries and the p-value of a sign-flip randomization test.
+
+```bash
+python examples/compare_runs.py \
+  --a runs/sae-seed*/results.json --b runs/vocab-seed*/results.json \
+  --task reranking --cap full --metric ndcg@10
+```
+
+## Importing an SAE
+
+`import_sae.py` wraps a Top-K SAE trained elsewhere in muscari's format, so that `eval-sae`, `inspect-sae`, `probe-sae` and the retrieval head can use it. The source must be one safetensors file with muscari's tensor names and shapes (`encoder.weight`, `encoder.bias`, `decoder.weight`, `decoder.bias`), which the model card of [mahiyama/modernbert-ja-310m-sae](https://huggingface.co/mahiyama/modernbert-ja-310m-sae) documents for that SAE. muscari keeps the decoder bias folded into `encoder.bias`; `--fold-decoder-bias` folds it for a file that keeps the raw encoder bias. The columns and prefixes given with `--column` only tell the evaluation commands how to read texts.
+
+```bash
+python examples/import_sae.py --weights sae.safetensors --k 16 \
+  --base-model sbintuitions/modernbert-ja-310m --max-length 512 \
+  --column "anc:query=検索クエリ: " --column "pos:document=検索文書: " \
+  --out runs/imported-sae
+```

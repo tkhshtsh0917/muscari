@@ -243,7 +243,7 @@ modernbert-ja-30mでの最初の小規模な学習では、float32で2,000ステ
 
 再構成誤差からは、SAEが落とした情報が重要かどうかは分かりません。そこで、SAEをエンコーダの中に戻し、エンコーダがそれをどう使うかを2通りの方法で測ります。
 
-`probe-sae`は、候補の文書が1行に1件入った並べ替え用データセットを読み、クエリごとに候補を並べ替えます。`--benchmark jqara`は[JQaRA](https://huggingface.co/datasets/hotchpotch/JQaRA)のテスト分割を読みます。ほかのデータは、`--dataset`または`--data-files`と、`--query-column`、`--passage-column`、`--label-column`、`--group-column`で指定します。既定では300件のクエリを抜き出し、どの値にもそのクエリについての標準誤差（`ndcg@10_stderr`）を付けます。
+`probe-sae`は、候補の文書が1行に1件入った並べ替え用データセットを読み、クエリごとに候補を並べ替えます。`--benchmark jqara`は[JQaRA](https://huggingface.co/datasets/hotchpotch/JQaRA)のテスト分割（`--split dev`で開発用分割）を読み、ベンチマーク自身の評価スクリプトと同じく、文書の前にタイトルを付けます。`--without-title`はタイトルを外します。設計ガイドにあるプローブの結果は、この形で測ったものです。ほかのデータは、`--dataset`または`--data-files`と、`--query-column`、`--passage-column`、`--label-column`、`--group-column`、`--title-column`で指定します。既定では300件のクエリを抜き出し、どの値にもそのクエリについての標準誤差（`ndcg@10_stderr`）を付けます。
 
 | 結果 | 意味 |
 | --- | --- |
