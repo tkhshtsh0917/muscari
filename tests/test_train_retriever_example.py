@@ -122,3 +122,29 @@ def test_mlm_head_trains_with_the_same_recipe(example, tiny_mlm_dir, data, tmp_p
 def test_each_head_needs_its_own_argument(example, tiny_model_dir, data, tmp_path):
     with pytest.raises(SystemExit, match="--sae"):
         example.run(arguments(example, "sae", tiny_model_dir, data, tmp_path / "out"))
+
+
+def test_vocabulary_head_estimates_its_shift_and_trains_with_gradcache(example, tiny_mlm_dir, data, tmp_path):
+    extra = ("--shift", "auto", "--shift-quantile", "0.9", "--fan-out", "4", "--mini-batch-size", "3")
+    result = example.run(arguments(example, "vocab", tiny_mlm_dir, data, tmp_path / "out", *extra))
+
+    config = result["head_config"]
+    assert config["fan_out"] == 4 and config["shift"] != 0 and config["special_token_ids"]
+    assert result["mini_batch_size"] == 3 and len(result["train_log"]) > 0
+    before = result["before"]["reranking"]["caps"]["full"]
+    assert before["l0_query"] > 0 and 0 <= result["after"]["reranking"]["caps"]["full"]["ndcg@10"] <= 1
+
+
+def test_a_trainable_sae_head_changes_its_encoder(example, tiny_model_dir, data, tmp_path):
+    from sentence_transformers.sparse_encoder import SparseEncoder
+
+    torch.manual_seed(42)
+    sae = TopKSAE(HIDDEN_SIZE, 96, 4)
+    sae_dir = save_topk_sae(tmp_path / "sae", sae, {"max_length": 32})
+    args = arguments(example, "sae", tiny_model_dir, data, tmp_path / "out", "--sae", str(sae_dir), "--trainable-sae")
+
+    result = example.run(args)
+
+    trained = SparseEncoder(str(tmp_path / "out" / "model"), device="cpu", trust_remote_code=True)
+    assert result["head_config"]["trainable"] is True
+    assert not torch.equal(trained[1].encoder_weight.detach(), load_sae(sae_dir).encoder_weight)

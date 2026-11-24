@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 """Train a sparse retriever with Sentence Transformers and evaluate it before and after.
 
-Two heads can be trained with the same data, loss and schedule, so that they can be compared:
+Three heads can be trained with the same data, loss and schedule, so that they can be compared:
 
-    --head sae   the latents of an exported SAE as the vocabulary (``muscari.retrieval``)
-    --head mlm   the tokenizer's vocabulary through the language-model head, as in SPLADE
+    --head sae     the latents of an exported SAE as the vocabulary (``muscari.retrieval``),
+                   frozen unless ``--trainable-sae``
+    --head vocab   the tokenizer's vocabulary through the language-model head, pooled over the
+                   same content tokens as the SAE head, with SPARSEUP's logit shift
+                   (``--shift``, ``auto`` estimates it) and per-token fan-out (``--fan-out``);
+                   see ``vocabulary_head.py``
+    --head mlm     Sentence Transformers' ``SpladePooling`` unchanged: every attended token,
+                   prompt and special tokens included
 
 The loss is a contrastive loss with in-batch negatives plus a FLOPS regulariser on queries and
 documents whose weight rises quadratically from zero. Before and after training the model is
@@ -37,9 +43,14 @@ from datasets import Dataset
 from sentence_transformers.base.sampler import BatchSamplers
 from sentence_transformers.sparse_encoder import SparseEncoder, SparseEncoderTrainer, SparseEncoderTrainingArguments
 from sentence_transformers.sparse_encoder.callbacks import SpladeRegularizerWeightSchedulerCallback
-from sentence_transformers.sparse_encoder.losses import SparseMultipleNegativesRankingLoss, SpladeLoss
+from sentence_transformers.sparse_encoder.losses import (
+    CachedSpladeLoss,
+    SparseMultipleNegativesRankingLoss,
+    SpladeLoss,
+)
 from sentence_transformers.sparse_encoder.modules import SpladePooling, Transformer
 from sparse_eval import add_evaluation_arguments, evaluate, summary
+from vocabulary_head import build_vocabulary_encoder
 
 from muscari.cli import load_rows
 from muscari.retrieval import build_sparse_encoder
@@ -47,8 +58,13 @@ from muscari.retrieval import build_sparse_encoder
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
-    parser.add_argument("--head", choices=["sae", "mlm"], required=True)
+    parser.add_argument("--head", choices=["sae", "vocab", "mlm"], required=True)
     parser.add_argument("--sae", help="directory of an exported SAE; required for --head sae")
+    parser.add_argument("--trainable-sae", action="store_true", help="train the SAE encoder with the transformer")
+    parser.add_argument("--shift", default="0", help='--head vocab: logit shift theta, or "auto"')
+    parser.add_argument("--shift-quantile", type=float, default=0.999, help="quantile that auto takes")
+    parser.add_argument("--shift-texts", type=int, default=256, help="training documents auto samples")
+    parser.add_argument("--fan-out", type=int, help="--head vocab: logits kept per token; default: all")
     parser.add_argument("--model", help="encoder; default for --head sae: the base model recorded with the SAE")
     parser.add_argument("--out", required=True, help="output directory")
     parser.add_argument("--query-prompt", default="", help="prefix the encoder expects for queries")
@@ -76,6 +92,11 @@ def build_parser() -> argparse.ArgumentParser:
     group.add_argument("--regularizer-weight", type=float, default=3.33e-5, help="FLOPS weight for both sides")
     group.add_argument("--regularizer-warmup", type=float, default=0.3, help="share of steps over which it rises")
     group.add_argument(
+        "--mini-batch-size",
+        type=int,
+        help="encode the batch in pieces of this size with GradCache (CachedSpladeLoss); same gradients",
+    )
+    group.add_argument(
         "--bf16",
         action="store_true",
         help="bfloat16 autocast (CUDA); it lowered the result of the SAE head clearly in one comparison",
@@ -86,8 +107,11 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def build_model(args: argparse.Namespace) -> SparseEncoder:
-    """The encoder with the requested head; prompts are registered as "query" and "document"."""
+def build_model(args: argparse.Namespace, documents: Sequence[str] = ()) -> SparseEncoder:
+    """The encoder with the requested head; prompts are registered as "query" and "document".
+
+    ``documents`` are the training texts from which ``--shift auto`` is estimated.
+    """
     if args.head == "sae":
         if not args.sae:
             raise SystemExit("--head sae needs --sae.")
@@ -97,10 +121,24 @@ def build_model(args: argparse.Namespace) -> SparseEncoder:
             query_prompt=args.query_prompt or None,
             document_prompt=args.document_prompt or None,
             max_seq_length=args.max_seq_length,
+            head_kwargs={"trainable": args.trainable_sae},
             device=args.device,
         )
     if not args.model:
-        raise SystemExit("--head mlm needs --model.")
+        raise SystemExit(f"--head {args.head} needs --model.")
+    if args.head == "vocab":
+        return build_vocabulary_encoder(
+            args.model,
+            shift=args.shift if args.shift == "auto" else float(args.shift),
+            fan_out=args.fan_out,
+            query_prompt=args.query_prompt or None,
+            document_prompt=args.document_prompt or None,
+            max_seq_length=args.max_seq_length,
+            shift_texts=list(documents)[: args.shift_texts],
+            shift_quantile=args.shift_quantile,
+            seed=args.seed,
+            device=args.device,
+        )
 
     prompts = {
         name: prompt for name, prompt in (("query", args.query_prompt), ("document", args.document_prompt)) if prompt
@@ -148,14 +186,26 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     """Train and evaluate; returns what is written to ``results.json``."""
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    model = build_model(args)
+    train_rows = load_rows(
+        dataset=args.dataset,
+        subsets=args.subsets,
+        data_files=args.data_files,
+        split=args.split,
+        column_names=[name for name in (args.query_column, args.positive_column, args.negative_column) if name],
+        seed=args.seed,
+    )
+    train_dataset = training_rows(train_rows, args)
+    model = build_model(args, documents=train_dataset["positive"])
 
     result: dict[str, Any] = {
         "head": args.head,
+        "head_config": model[-1].get_config_dict(),
         "max_steps": args.max_steps,
         "batch_size": args.batch_size,
+        "mini_batch_size": args.mini_batch_size,
         "learning_rate": args.learning_rate,
         "regularizer_weight": args.regularizer_weight,
+        "bf16": args.bf16,
         "seed": args.seed,
     }
     before_path = out / "before.json"
@@ -166,26 +216,24 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         before_path.write_text(json.dumps(result["before"], ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         print(json.dumps({"before": summary(result["before"])}, ensure_ascii=False), flush=True)
 
-    train_rows = load_rows(
-        dataset=args.dataset,
-        subsets=args.subsets,
-        data_files=args.data_files,
-        split=args.split,
-        column_names=[name for name in (args.query_column, args.positive_column, args.negative_column) if name],
-        seed=args.seed,
-    )
-    train_dataset = training_rows(train_rows, args)
     prompts = {
         column: args.query_prompt if column == "anchor" else args.document_prompt
         for column in train_dataset.column_names
     }
 
-    loss = SpladeLoss(
-        model,
-        SparseMultipleNegativesRankingLoss(model),
-        document_regularizer_weight=args.regularizer_weight,
-        query_regularizer_weight=args.regularizer_weight,
-    )
+    weights = {
+        "document_regularizer_weight": args.regularizer_weight,
+        "query_regularizer_weight": args.regularizer_weight,
+    }
+    if args.mini_batch_size:
+        loss: SpladeLoss = CachedSpladeLoss(
+            model,
+            SparseMultipleNegativesRankingLoss(model),
+            **weights,
+            mini_batch_size=args.mini_batch_size,
+        )
+    else:
+        loss = SpladeLoss(model, SparseMultipleNegativesRankingLoss(model), **weights)
     trainer = SparseEncoderTrainer(
         model=model,
         args=SparseEncoderTrainingArguments(
