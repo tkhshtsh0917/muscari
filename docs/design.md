@@ -361,6 +361,20 @@ A latent like the first one adds a similar amount to the score of every pair of 
 
 The retrieval head was checked on the same encoder with its real tokenizer. On three queries and four documents its vectors equal the probe's exactly. The prefix has four tokens, Sentence Transformers reports a prompt length of five including the leading special token, and the character-based rule of SAE training drops the same positions.
 
+### Three 310M encoders
+
+The same probe on SAEs with 16,384 latents trained on 10 million tokens of three encoders of about 310M parameters, with the same 200 queries and passages without titles. `ruri-v3-310m` is trained for retrieval, `ruri-v3-pt-310m` is its pre-trained starting point, and `modernbert-ja-310m` is a masked language model whose mean-pooled states were never trained as embeddings.
+
+| Encoder | FVU | Dense, encoder as it is | Recovered | Sparse | Sparse with IDF | Active latents, query / passage |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| ruri-v3-310m | 0.50 | 0.583 | 0.47 | 0.522 | 0.537 | 150 / 406 |
+| ruri-v3-pt-310m | 0.49 | 0.444 | 0.58 | 0.480 | 0.489 | 143 / 311 |
+| modernbert-ja-310m | 0.33 | 0.211 | 0.60 | 0.388 | 0.410 | 254 / 769 |
+
+- **The sparse features of the two encoders that were not trained for retrieval rank better than their own dense embeddings**: 0.480 against 0.444 for ruri-v3-pt-310m and 0.388 against 0.211 for modernbert-ja-310m. Pooling the maximum of sparse features suits ranking better than a mean of the states.
+- **The encoder that reconstructs best ranks worst, here.** modernbert-ja-310m has the lowest FVU and the lowest sparse nDCG@10, and it activates the most latents per text. Of its latents, 35 fire on a single token at least 90% of the time, against one or two for the ruri encoders; its states keep more of the token identity, which is easier to reconstruct and less useful to rank without training.
+- On modernbert-ja-310m, the masked-language-model loss recovered is 0.858 with 15% of the tokens masked and 0.812 with 30%, on 100 texts. The SAE of the Shizuku card, with 65,536 latents and one billion tokens on the same encoder, reports 0.944 on its own evaluation data, without stating the masking rate.
+
 ### Retrieval training on a small scale
 
 `examples/train_retriever.py` with the defaults it documents: batch 16, one hard negative, 256 tokens, 2,000 steps, learning rate 2e-5 and a FLOPS weight of 3.33e-5 on both sides. The training data are the retrieval subsets of `cl-nagoya/ruri-v3-dataset-ft` without `jqara`, which may share passages with the evaluation. Each run is ranked on the same 200 JQaRA queries as the probe above, with a standard error near 0.02. The SAE on modernbert-ja-30m has 8,192 latents and was trained on 30 million tokens of the same data; trained again on the L4 it gave the same FVU (0.203) and masked-language-model loss recovered (0.837).
@@ -408,8 +422,8 @@ Except for the runs above, all of this uses a randomly initialised two-layer BER
 - AuxK on real activations.
 - A run of the full length on any device. The time estimates above are extrapolations.
 - The pooled, per-text figures and the per-latent listing at full size. They have been measured only on 8,192 latents and ruri-v3-30m.
-- The reranking probe beyond 8,192 latents and ruri-v3-30m, with titles in the passages, or on all queries of the benchmark.
-- The masked-language-model loss recovered on a real SAE. The code is tested against hand-built cases only.
+- The reranking probe beyond 16,384 latents, with titles in the passages, or on all queries of the benchmark.
+- The masked-language-model loss recovered beyond 16,384 latents and 10 million tokens.
 
 ## Research background
 
