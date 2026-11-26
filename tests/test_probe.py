@@ -13,10 +13,12 @@ from muscari.export import save_sae
 from muscari.probe import (
     PooledText,
     RerankingExample,
+    fuse_scores,
     group_reranking_rows,
     pool_texts,
     probe_reranking,
     ranking_metrics,
+    reciprocal_rank_fusion,
     sparse_scores,
 )
 
@@ -136,6 +138,45 @@ def test_sparse_scores_are_weighted_dot_products():
         0.0,
         3.0,
     ]
+
+
+def test_fusion_combines_two_rankings_that_are_each_wrong():
+    labels = torch.tensor([0, 1, 0, 0])
+    dense = torch.tensor([0.9, 0.8, 0.2, 0.1])  # prefers candidate 0, then the relevant one
+    sparse = torch.tensor([0.0, 5.0, 1.0, 6.0])  # prefers candidate 3, then the relevant one
+
+    fused = fuse_scores(dense, sparse, 0.5)
+    by_rank = reciprocal_rank_fusion([dense, sparse])
+
+    z_dense = (dense.double() - dense.double().mean()) / dense.double().std()
+    z_sparse = (sparse.double() - sparse.double().mean()) / sparse.double().std()
+    expected = torch.tensor([1 / 61 + 1 / 64, 2 / 62, 1 / 63 + 1 / 63, 1 / 64 + 1 / 61], dtype=torch.float64)
+    assert torch.allclose(fused, 0.5 * z_dense + 0.5 * z_sparse)
+    assert torch.allclose(by_rank, expected)
+    assert ranking_metrics(dense, labels)["mrr@10"] == ranking_metrics(sparse, labels)["mrr@10"] == 0.5
+    assert ranking_metrics(fused, labels)["mrr@10"] == ranking_metrics(by_rank, labels)["mrr@10"] == 1.0
+    assert torch.equal(fuse_scores(dense, sparse, 1.0).argsort(), dense.argsort())
+    assert torch.equal(fuse_scores(dense, torch.ones(4), 0.3).argsort(), dense.argsort())  # a constant adds nothing
+    assert torch.equal(fuse_scores(torch.tensor([2.0]), torch.tensor([3.0]), 0.5), torch.zeros(1, dtype=torch.float64))
+
+
+def test_the_probe_reports_fused_rankings_with_paired_gains(source, tmp_path):
+    examples = [
+        RerankingExample("東京 求人", ("東京 求人 検索", "名古屋 営業", "経理 給与 残業", "在宅 勤務"), (1, 0, 0, 0)),
+        RerankingExample("営業 経験", ("派遣 休日", "営業 経験 資格", "東京 開発"), (0, 1, 0)),
+        RerankingExample("在宅 経理", ("東京 開発", "在宅 勤務", "経理 給与 残業"), (0, 1, 1)),
+    ]
+
+    result = probe_reranking(source, perfect_sae(tmp_path), examples, query_kind=QUERY_PREFIX, passage_kind=DOC_PREFIX)
+
+    hybrid = result["hybrid"]
+    assert list(hybrid["weighted"]) == ["0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7", "0.8", "0.9"]
+    for entry in (hybrid["rrf"], *hybrid["weighted"].values()):
+        for metric in ("ndcg@10", "mrr@10"):
+            assert 0 <= entry[metric] <= 1 and entry[f"{metric}_stderr"] >= 0
+            assert entry["over_dense"][metric] == pytest.approx(entry[metric] - result["dense"]["original"][metric])
+            assert entry["over_sparse"][metric] == pytest.approx(entry[metric] - result["sparse"]["plain"][metric])
+            assert entry["over_dense"][f"{metric}_stderr"] >= 0
 
 
 def test_a_perfect_sae_recovers_the_dense_ranking(source, tmp_path):

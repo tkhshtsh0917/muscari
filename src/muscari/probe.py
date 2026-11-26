@@ -24,6 +24,8 @@ from .activations import EncoderActivationSource
 from .export import ExportedSAE
 
 VARIANTS = ("original", "spliced", "empty")
+# Weights of the dense score in the weighted fusion of the reranking probe.
+HYBRID_DENSE_WEIGHTS = (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)
 
 
 @dataclass(frozen=True)
@@ -213,6 +215,36 @@ def sparse_scores(query: PooledText, passages: Sequence[PooledText], weights: to
     return torch.zeros(len(passages), dtype=torch.float64).index_add_(0, owner, products)
 
 
+def fuse_scores(dense: torch.Tensor, sparse: torch.Tensor, dense_weight: float) -> torch.Tensor:
+    """``dense_weight * z(dense) + (1 - dense_weight) * z(sparse)`` over one query's candidates.
+
+    ``z`` standardises a score list to zero mean and unit variance among the candidates, so the
+    two scales become comparable; a constant list contributes nothing. The standardisation
+    needs all candidates of the query, as in reranking.
+    """
+
+    def standardise(scores: torch.Tensor) -> torch.Tensor:
+        scores = scores.double()
+        spread = scores.std() if scores.numel() > 1 else torch.tensor(0.0)
+        return (scores - scores.mean()) / spread if spread > 0 else torch.zeros_like(scores)
+
+    return dense_weight * standardise(dense) + (1.0 - dense_weight) * standardise(sparse)
+
+
+def reciprocal_rank_fusion(score_lists: Sequence[torch.Tensor], constant: float = 60.0) -> torch.Tensor:
+    """Sum over the lists of ``1 / (constant + rank)``, with rank 1 for the highest score.
+
+    Reciprocal rank fusion (Cormack et al., 2009) uses only the ranks, so it has nothing to
+    tune; 60 is the constant of that paper. Equal scores keep their input order.
+    """
+    fused = torch.zeros(score_lists[0].shape[0], dtype=torch.float64)
+    for scores in score_lists:
+        ranks = torch.empty_like(fused)
+        ranks[scores.argsort(descending=True, stable=True)] = torch.arange(1, fused.shape[0] + 1).double()
+        fused += 1.0 / (constant + ranks)
+    return fused
+
+
 def _summary(values: Sequence[float]) -> dict[str, float]:
     ordered = torch.tensor(sorted(values), dtype=torch.float64)
     return {"mean": float(ordered.mean()), "p05": float(ordered.quantile(0.05)), "min": float(ordered[0])}
@@ -250,6 +282,14 @@ def probe_reranking(
         of the encoder's ranking quality that survives the SAE, with 1 for all of it.
         ``cosine`` holds the similarity between the original and the spliced embedding of the
         same text.
+
+        ``hybrid``: nDCG@k and MRR@k of rankings that fuse ``dense.original`` with
+        ``sparse.plain``, both of which come from one pass through the encoder. ``rrf`` is
+        reciprocal rank fusion, which has nothing to tune. ``weighted`` maps a weight of the
+        dense score, from 0.1 to 0.9, to the ranking by ``fuse_scores``; choose the weight on
+        one split and report it on another. Every entry also holds ``over_dense`` and
+        ``over_sparse``: the mean per-query gain over each fused ranking, with the standard
+        error of that paired difference.
 
         ``sparse``: nDCG@k and MRR@k of ranking by the dot product of the pooled sparse
         vectors: ``plain`` as they are, and ``idf`` with every latent weighted by
@@ -296,8 +336,16 @@ def probe_reranking(
                 passage_embeddings[:, index], query.embeddings[index].double().unsqueeze(0), dim=1
             )
             add(variant, similarity, labels)
+            if variant == "original":
+                dense_scores = similarity
         for name, weight in weights.items():
-            add(name, sparse_scores(query, candidates, weight), labels)
+            scores = sparse_scores(query, candidates, weight)
+            add(name, scores, labels)
+            if name == "plain":
+                plain_scores = scores
+        add("rrf", reciprocal_rank_fusion([dense_scores, plain_scores]), labels)
+        for dense_weight in HYBRID_DENSE_WEIGHTS:
+            add(f"weighted-{dense_weight}", fuse_scores(dense_scores, plain_scores, dense_weight), labels)
 
     def cosine(vectors: Iterable[PooledText]) -> dict[str, float]:
         return _summary([float(torch.cosine_similarity(v.embeddings[0], v.embeddings[1], dim=0)) for v in vectors])
@@ -314,6 +362,17 @@ def probe_reranking(
         gap = totals["original"][metric] - totals["empty"][metric]
         recovered[metric] = (totals["spliced"][metric] - totals["empty"][metric]) / gap if gap else math.nan
 
+    def hybrid(name: str) -> dict[str, Any]:
+        """The fused ranking and its paired gain over each of the two rankings it fuses."""
+        gains: dict[str, dict[str, float]] = {}
+        for baseline, key in (("original", "over_dense"), ("plain", "over_sparse")):
+            gains[key] = {}
+            for metric, values in per_query[name].items():
+                gain = torch.tensor(values, dtype=torch.float64) - torch.tensor(per_query[baseline][metric]).double()
+                gains[key][metric] = float(gain.mean())
+                gains[key][f"{metric}_stderr"] = float(gain.std() / math.sqrt(len(values))) if len(values) > 1 else 0.0
+        return {**totals[name], **gains}
+
     return {
         "queries": len(examples),
         "passages": n_passages,
@@ -323,6 +382,10 @@ def probe_reranking(
             **{variant: totals[variant] for variant in VARIANTS},
             "recovered": recovered,
             "cosine": {"query": cosine(query_vectors.values()), "passage": cosine(passage_vectors.values())},
+        },
+        "hybrid": {
+            "rrf": hybrid("rrf"),
+            "weighted": {str(weight): hybrid(f"weighted-{weight}") for weight in HYBRID_DENSE_WEIGHTS},
         },
         "sparse": {
             "plain": totals["plain"],

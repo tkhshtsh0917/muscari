@@ -255,8 +255,10 @@ Reconstruction error does not say whether what the SAE loses matters. Two measur
 | `sparse.plain` | ranking by the dot product of the pooled SAE features: `log1p`, then the maximum over the content tokens |
 | `sparse.idf` | the same with each latent weighted by its inverse document frequency among the candidate passages |
 | `sparse.l0` | active latents per query and per passage |
+| `hybrid.rrf` | ranking that fuses `dense.original` and `sparse.plain`, which come from the same pass through the encoder, by reciprocal rank fusion (constant 60, nothing to tune) |
+| `hybrid.weighted` | the same two rankings fused as a weighted sum of their scores, each standardised over the query's candidates, for dense weights from 0.1 to 0.9; choose the weight on one split and report it on another |
 
-The dense rows need an encoder trained to produce mean-pooled embeddings, such as ruri-v3. The sparse rows are the state of an SAE-based sparse retriever before it is trained, so they are a starting point and not a result.
+Every `hybrid` entry also holds `over_dense` and `over_sparse`, its mean per-query gain over each of the two rankings with the standard error of that paired difference. The dense and hybrid rows need an encoder trained to produce mean-pooled embeddings, such as ruri-v3. The sparse rows are the state of an SAE-based sparse retriever before it is trained, so they are a starting point and not a result.
 
 For an encoder that still has its language-model head, `eval-sae --mlm-texts 100` adds `mlm`: the masked-language-model loss with the encoder untouched (`loss_clean`), with the final states of the content tokens replaced by the SAE's reconstruction (`loss_spliced`) and by their mean (`loss_mean`), and `recovered = (loss_mean - loss_spliced) / (loss_mean - loss_clean)`. The Shizuku SAE card reports this quantity. It does not state the masking rate; the default here is 15% and the value used is written next to the result.
 
