@@ -16,7 +16,7 @@ be compared on the same queries (``compare_runs.py``).
 
     python examples/sparse_eval.py --model runs/retriever/model \\
         --benchmark jqara --split test --retrieval mteb/MIRACLJaRetrievalLite \\
-        --caps full 64/400 32/256 --out runs/retriever/eval.json
+        --caps full 64/256 64/128 64/64 --out runs/retriever/eval.json
 
 Published models whose modules are not part of Sentence Transformers need
 ``--trust-remote-code``, which runs code from the model repository; read that code first.

@@ -69,16 +69,16 @@ python examples/train_retriever.py \
 python examples/sparse_eval.py --model runs/ruri-v3-30m-retriever-trial/model \
   --benchmark jqara --split test \
   --retrieval mteb/MIRACLJaRetrievalLite mteb/JaCWIRRetrievalLite \
-  --caps full 64/400 32/256 --out runs/ruri-v3-30m-retriever-trial/eval.json
+  --caps full 64/256 64/128 64/64 --out runs/ruri-v3-30m-retriever-trial/eval.json
 ```
 
 - 並べ替えでは、クエリごとにそのクエリの候補を順位付けします。JQaRAでは、ベンチマーク自身の評価スクリプトと同じく、文書を`"{title} {text}"`にします（`--without-title`でタイトルを外します）。`--queries`で標本を取らない限り、分割のクエリをすべて使います。設定を選ぶには`dev`、最終的な数値には`test`を使います。
 - 検索では、MTEB形式（構成`corpus`、`queries`、`qrels`、またはその3つの`.jsonl`を置いたディレクトリ）のコーパス全体を順位付けし、nDCG@10、MRR@10、recall@100を報告します。コーパスを少しずつエンコーダに通し、クエリごとの上位100件に順次まとめるので、コーパスのベクトルもスコア行列全体も保持しません。
-- `--caps QUERY/DOCUMENT`は、推論時に各ベクトルの大きい重みだけを残します。`full`はすべて残します。どの指標にも、クエリと文書1件あたりの非ゼロ次元数とFLOPS（`sum_j p_q(j) p_d(j)`）が付きます。
+- `--caps QUERY/DOCUMENT`は、推論時に各ベクトルの大きい重みだけを残します。`full`はすべて残します。例の値はSPARSEUPの論文の格子で、クエリは64項まで、文書は64、128、256、または上限なしです。どの指標にも、クエリと文書1件あたりの非ゼロ次元数とFLOPS（`sum_j p_q(j) p_d(j)`）が付きます。
 
 結果には、クエリごとの値もそのidをキーにして入ります。モジュールがSentence Transformersに含まれない公開モデルには`--trust-remote-code`が必要で、これはそのリポジトリのコードを実行します。先にそのコードを読んでください。これらのスクリプトが保存したローカルのディレクトリは、Pythonファイルを含まない限り、このオプションなしで読み込めます。
 
-`compare_runs.py`は、2つの条件を同じクエリの上で比べます。条件ごとに複数の結果ファイル（例えば学習のシードごとに1つ）を渡すと、まずクエリごとに平均します。2つの平均、差、クエリについての対応のあるブートストラップによる95%区間、符号反転による並べ替え検定のp値を報告します。
+`compare_runs.py`は、2つの条件を同じクエリの上で比べます。条件ごとに複数の結果ファイル（例えば学習のシードごとに1つ）を渡せます。2つの平均、実行ごとの平均と条件内での実行間のばらつき、差、ブートストラップによる95%区間、対応のある符号反転の並べ替え検定のp値を報告します。区間は、クエリに加えて、実行が複数ある条件ではその実行も再標本化するので、シード間のばらつきも含みます。シードが3つのときは、その部分は粗くなります。`--resample queries`は実行を固定します。
 
 ```bash
 python examples/compare_runs.py \

@@ -33,7 +33,7 @@ def test_a_constant_shift_is_detected_and_its_interval_is_tight(compare_runs):
     base = {f"q{i}": float(value) for i, value in enumerate(torch.rand(200))}
     better = {query: value + 0.05 for query, value in base.items()}
 
-    result = compare_runs.compare(base, better, resamples=2000)
+    result = compare_runs.compare([base], [better], resamples=2000)
 
     assert result["difference"] == pytest.approx(0.05)
     assert result["ci_low"] == pytest.approx(0.05) and result["ci_high"] == pytest.approx(0.05)
@@ -45,13 +45,33 @@ def test_noise_without_an_effect_is_not_significant(compare_runs):
     a = {f"q{i}": float(value) for i, value in enumerate(torch.rand(300, generator=generator))}
     b = {f"q{i}": float(value) for i, value in enumerate(torch.rand(300, generator=generator))}
 
-    result = compare_runs.compare(a, b, resamples=4000, seed=42)
+    result = compare_runs.compare([a], [b], resamples=4000, seed=42)
 
     assert result["ci_low"] < result["difference"] < result["ci_high"]
     assert result["ci_low"] < 0 < result["ci_high"] and result["p_value"] > 0.05
-    assert result == compare_runs.compare(a, b, resamples=4000, seed=42)  # reproducible
+    assert result == compare_runs.compare([a], [b], resamples=4000, seed=42)  # reproducible
+    assert result["resample"] == "queries" and result["run_std_a"] == 0.0  # one run each: nothing else to draw
     with pytest.raises(ValueError, match="no query"):
-        compare_runs.compare({"x": 1.0}, {"y": 1.0})
+        compare_runs.compare([{"x": 1.0}], [{"y": 1.0}])
+
+
+def test_the_interval_widens_with_the_spread_between_seeds(compare_runs):
+    generator = torch.Generator().manual_seed(2)
+    noise = torch.rand(400, generator=generator)
+    base = {f"q{i}": float(value) for i, value in enumerate(noise)}
+    # Three seeds of arm b sit at +0.00, +0.05 and +0.10: the seed decides more than the queries do.
+    seeds = [{query: value + shift for query, value in base.items()} for shift in (0.0, 0.05, 0.10)]
+
+    fixed = compare_runs.compare([base], seeds, resample="queries", resamples=3000)
+    drawn = compare_runs.compare([base], seeds, resample="runs-and-queries", resamples=3000)
+
+    assert fixed["difference"] == drawn["difference"] == pytest.approx(0.05)
+    assert fixed["ci_high"] - fixed["ci_low"] == pytest.approx(0.0, abs=1e-9)  # the queries agree exactly
+    assert drawn["ci_low"] == pytest.approx(0.0, abs=1e-9) and drawn["ci_high"] == pytest.approx(0.10)
+    assert drawn["run_means_b"] == pytest.approx([float(noise.double().mean()) + s for s in (0.0, 0.05, 0.10)])
+    assert drawn["run_std_b"] == pytest.approx(0.05) and drawn["resample"] == "runs-and-queries"
+    with pytest.raises(ValueError, match="Unknown resample"):
+        compare_runs.compare([base], seeds, resample="seeds")
 
 
 def test_runs_are_read_averaged_over_seeds_and_paired(compare_runs, tmp_path):

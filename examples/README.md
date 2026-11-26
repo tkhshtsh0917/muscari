@@ -69,16 +69,16 @@ Training saves a checkpoint every tenth of the steps; started again with the sam
 python examples/sparse_eval.py --model runs/ruri-v3-30m-retriever-trial/model \
   --benchmark jqara --split test \
   --retrieval mteb/MIRACLJaRetrievalLite mteb/JaCWIRRetrievalLite \
-  --caps full 64/400 32/256 --out runs/ruri-v3-30m-retriever-trial/eval.json
+  --caps full 64/256 64/128 64/64 --out runs/ruri-v3-30m-retriever-trial/eval.json
 ```
 
 - Reranking ranks each query's own candidates. For JQaRA a passage is `"{title} {text}"`, as in the benchmark's own evaluator (`--without-title` drops the title); all queries of the split are used unless `--queries` draws a sample. The `dev` split serves for choosing settings, `test` for the final numbers.
 - Retrieval ranks a whole corpus in the MTEB layout (configurations `corpus`, `queries`, `qrels`, or a directory with those three `.jsonl` files) and reports nDCG@10, MRR@10 and recall@100. The corpus is streamed through the encoder and merged into a running top-100 per query, so neither the corpus vectors nor the full score matrix are kept.
-- `--caps QUERY/DOCUMENT` keeps the largest weights of each vector at inference time; `full` keeps them all. Every metric comes with the active dimensions per query and per document and the FLOPS, `sum_j p_q(j) p_d(j)`.
+- `--caps QUERY/DOCUMENT` keeps the largest weights of each vector at inference time; `full` keeps them all. The example uses the grid of the SPARSEUP paper: queries capped at 64 terms, documents at 64, 128, 256 or not at all. Every metric comes with the active dimensions per query and per document and the FLOPS, `sum_j p_q(j) p_d(j)`.
 
 Every result also holds the value of each query, keyed by its id. A published model whose modules are not part of Sentence Transformers needs `--trust-remote-code`, which runs code from its repository; read that code first. A local directory saved by these scripts loads without it, unless it contains Python files.
 
-`compare_runs.py` compares two arms on the same queries. Several result files per arm, for example one per training seed, are averaged per query first; the script reports both means, the difference, a 95% paired bootstrap interval over queries and the p-value of a sign-flip randomization test.
+`compare_runs.py` compares two arms on the same queries. An arm may have several result files, for example one per training seed. The script reports both means, the mean of every run and the spread between the runs of an arm, the difference, a 95% bootstrap interval and the p-value of a paired sign-flip randomization test. The interval resamples the queries and, for an arm with more than one run, its runs, so it also covers the variation between seeds; with three seeds that part is coarse. `--resample queries` keeps the runs fixed.
 
 ```bash
 python examples/compare_runs.py \
