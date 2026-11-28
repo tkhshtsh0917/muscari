@@ -127,6 +127,10 @@ def test_each_head_needs_its_own_argument(example, tiny_model_dir, data, tmp_pat
 def test_vocabulary_head_estimates_its_shift_and_trains_with_gradcache(example, tiny_mlm_dir, data, tmp_path):
     extra = ("--shift", "auto", "--shift-quantile", "0.9", "--fan-out", "4", "--mini-batch-size", "3")
     result = example.run(arguments(example, "vocab", tiny_mlm_dir, data, tmp_path / "out", *extra))
+    pooled = example.build_model(
+        arguments(example, "vocab", tiny_mlm_dir, data, tmp_path / "specials", "--pool-special-tokens")
+    )
+    assert pooled[-1].special_token_ids == []  # nothing is left out but the prompt
 
     config = result["head_config"]
     assert config["fan_out"] == 4 and config["shift"] != 0 and config["special_token_ids"]

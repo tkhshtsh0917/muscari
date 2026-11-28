@@ -13,9 +13,15 @@ vocabulary head and an SAE head differ in their dictionary and in nothing else. 
 ``shift=0``, no fan-out, ``special_token_ids=[]`` and ``exclude_prompt=False`` it equals
 Sentence Transformers' ``SpladePooling("max")``.
 
-What this project chose where the paper summary is silent: the gradient of the fan-out flows
-only through the kept logits (the selection itself is not differentiated), and ``theta`` is
-estimated from a random sample of the content-token logits of a few hundred texts.
+How this relates to the model its authors released (``Linkup-Platform/linkup-sparseup-embed-v1``,
+whose code was read, not run): that model multiplies the activations by a mask of each token's
+``f`` largest, so, as here, the gradient reaches the kept logits only and the selection is not
+differentiated. It pools every attended token except those of the prompt, special tokens
+included; this module leaves the special tokens out by default, to match the SAE head, and
+pools them with ``special_token_ids=[]``. It also merges vocabulary entries that differ in case
+or word boundary, which this module does not do. ``theta`` is estimated here from a random
+sample of the content-token logits of a few hundred documents; the paper says a small sample
+of the collection and does not say which positions it counts.
 """
 
 from __future__ import annotations

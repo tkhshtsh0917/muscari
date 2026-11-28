@@ -6,9 +6,10 @@ Three heads can be trained with the same data, loss and schedule, so that they c
     --head sae     the latents of an exported SAE as the vocabulary (``muscari.retrieval``),
                    frozen unless ``--trainable-sae``
     --head vocab   the tokenizer's vocabulary through the language-model head, pooled over the
-                   same content tokens as the SAE head, with SPARSEUP's logit shift
-                   (``--shift``, ``auto`` estimates it) and per-token fan-out (``--fan-out``);
-                   see ``vocabulary_head.py``
+                   same content tokens as the SAE head (``--pool-special-tokens`` adds the
+                   special tokens), with SPARSEUP's logit shift (``--shift``, ``auto``
+                   estimates it) and per-token fan-out (``--fan-out``); see
+                   ``vocabulary_head.py``
     --head mlm     Sentence Transformers' ``SpladePooling`` unchanged: every attended token,
                    prompt and special tokens included
 
@@ -65,6 +66,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--shift-quantile", type=float, default=0.999, help="quantile that auto takes")
     parser.add_argument("--shift-texts", type=int, default=256, help="training documents auto samples")
     parser.add_argument("--fan-out", type=int, help="--head vocab: logits kept per token; default: all")
+    parser.add_argument(
+        "--pool-special-tokens",
+        action="store_true",
+        help="--head vocab: pool the special tokens too, as SPLADE and the released SPARSEUP model do",
+    )
     parser.add_argument("--model", help="encoder; default for --head sae: the base model recorded with the SAE")
     parser.add_argument("--out", required=True, help="output directory")
     parser.add_argument("--query-prompt", default="", help="prefix the encoder expects for queries")
@@ -131,6 +137,7 @@ def build_model(args: argparse.Namespace, documents: Sequence[str] = ()) -> Spar
             args.model,
             shift=args.shift if args.shift == "auto" else float(args.shift),
             fan_out=args.fan_out,
+            keep_special_tokens=args.pool_special_tokens,
             query_prompt=args.query_prompt or None,
             document_prompt=args.document_prompt or None,
             max_seq_length=args.max_seq_length,
