@@ -88,9 +88,11 @@ def test_shift_and_fan_out_apply_to_content_tokens_only(head_module, tiny_mlm_di
 
 
 def test_gradients_reach_the_encoder_through_the_fan_out(head_module, tiny_mlm_dir):
-    model = head_module.build_vocabulary_encoder(str(tiny_mlm_dir), shift=-1.0, fan_out=2, max_seq_length=32)
+    model = head_module.build_vocabulary_encoder(
+        str(tiny_mlm_dir), shift=-1.0, fan_out=2, max_seq_length=32, device="cpu"
+    )
     model.train()
-    features = model.tokenize(TEXTS[:2])
+    features = model.preprocess(TEXTS[:2])
     pooled = model(features)["sentence_embedding"]
     pooled.sum().backward()
 
@@ -99,7 +101,9 @@ def test_gradients_reach_the_encoder_through_the_fan_out(head_module, tiny_mlm_d
 
 
 def test_the_estimated_shift_is_the_quantile_of_the_content_logits(head_module, tiny_mlm_dir):
-    model = head_module.build_vocabulary_encoder(str(tiny_mlm_dir), document_prompt=DOC_PREFIX, max_seq_length=32)
+    model = head_module.build_vocabulary_encoder(
+        str(tiny_mlm_dir), document_prompt=DOC_PREFIX, max_seq_length=32, device="cpu"
+    )
     seen, handle = _capture(model)
     shift = head_module.estimate_shift(model, TEXTS, quantile=0.9, samples_per_batch=10**9, batch_size=64)
     handle.remove()
@@ -107,7 +111,12 @@ def test_the_estimated_shift_is_the_quantile_of_the_content_logits(head_module, 
     logits, _, _ = model[-1]._content_tokens(seen[0])
     assert shift == pytest.approx(float(torch.quantile(logits.float().reshape(-1), 0.9)))
     built = head_module.build_vocabulary_encoder(
-        str(tiny_mlm_dir), shift="auto", shift_texts=TEXTS, shift_quantile=0.9, document_prompt=DOC_PREFIX
+        str(tiny_mlm_dir),
+        shift="auto",
+        shift_texts=TEXTS,
+        shift_quantile=0.9,
+        document_prompt=DOC_PREFIX,
+        device="cpu",
     )
     sampled = head_module.estimate_shift(built, TEXTS, quantile=0.9, samples_per_batch=50)
     assert built[-1].shift == pytest.approx(shift, rel=1e-5)
