@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
@@ -123,9 +124,16 @@ def encode(encode_fn: Callable[..., Any], texts: Sequence[str], batch_size: int)
     return vectors.float()
 
 
-def _chunks(count: int, size: int) -> Iterable[tuple[int, int]]:
-    for start in range(0, count, size):
+def _chunks(count: int, size: int, what: str = "") -> Iterable[tuple[int, int]]:
+    """``(start, end)`` of consecutive chunks; with ``what`` set, progress goes to stderr."""
+    started = time.perf_counter()
+    for index, start in enumerate(range(0, count, size)):
         yield start, min(start + size, count)
+        if what and (index % 10 == 9 or start + size >= count):
+            done = min(start + size, count)
+            print(
+                f"encoded {done}/{count} {what} in {time.perf_counter() - started:.0f} s", file=sys.stderr, flush=True
+            )
 
 
 # ----------------------------------------------------------------------------------- reranking
@@ -175,7 +183,7 @@ def rerank(
     scores = torch.empty(len(caps), pair_query.shape[0], dtype=torch.float64)
     pairs_per_step = max(1, 2**24 // dimension)
 
-    for start, end in _chunks(len(passages), chunk):
+    for start, end in _chunks(len(passages), chunk, "passages"):
         vectors = encode(model.encode_document, passages[start:end], batch_size)
         low, high = (int(i) for i in torch.searchsorted(sorted_passage, torch.tensor([start, end])))
         slots = order[low:high]
@@ -315,7 +323,7 @@ def retrieve(
     best_scores = [torch.full((len(query_ids), 0), -math.inf, device=device) for _ in caps]
     best_rows = [torch.empty((len(query_ids), 0), dtype=torch.long, device=device) for _ in caps]
 
-    for start, end in _chunks(len(document_ids), chunk):
+    for start, end in _chunks(len(document_ids), chunk, "documents"):
         vectors = encode(model.encode_document, [corpus[doc] for doc in document_ids[start:end]], batch_size)
         rows = torch.arange(start, end, device=device).expand(len(query_ids), -1)
         for index, cap in enumerate(caps):

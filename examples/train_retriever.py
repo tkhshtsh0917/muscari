@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
+import unicodedata
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -88,6 +89,11 @@ def build_parser() -> argparse.ArgumentParser:
     group.add_argument("--positive-column", default="positive")
     group.add_argument("--negative-column", help="column with one hard negative or a list of them")
     group.add_argument("--negatives", type=int, default=1, help="hard negatives used per query")
+    group.add_argument(
+        "--exclude-queries",
+        nargs="+",
+        help="files with one query per line; training rows with such a query (after NFKC) are dropped",
+    )
 
     group = parser.add_argument_group("training")
     group.add_argument("--max-steps", type=int, default=1000)
@@ -97,6 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
     group.add_argument("--weight-decay", type=float, default=0.01)
     group.add_argument("--regularizer-weight", type=float, default=3.33e-5, help="FLOPS weight for both sides")
     group.add_argument("--regularizer-warmup", type=float, default=0.3, help="share of steps over which it rises")
+    group.add_argument("--loss-scale", type=float, default=1.0, help="factor on the scores inside the contrastive loss")
     group.add_argument(
         "--mini-batch-size",
         type=int,
@@ -161,9 +168,29 @@ def build_model(args: argparse.Namespace, documents: Sequence[str] = ()) -> Spar
     )
 
 
+def normalise_query(text: str) -> str:
+    """The form in which queries are compared with ``--exclude-queries``: NFKC, without outer spaces."""
+    return unicodedata.normalize("NFKC", text).strip()
+
+
+def excluded_queries(files: Sequence[str] | None) -> set[str]:
+    """The queries listed one per line in ``files``, normalised; empty lines are ignored."""
+    queries: set[str] = set()
+    for file in files or []:
+        for line in Path(file).read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                queries.add(normalise_query(line))
+    return queries
+
+
 def training_rows(rows: Iterable[Mapping[str, Any]], args: argparse.Namespace) -> Dataset:
-    """Rows of ``anchor``, ``positive`` and ``negative_1..n``; rows that lack a field are skipped."""
+    """Rows of ``anchor``, ``positive`` and ``negative_1..n``.
+
+    Rows that lack a field are skipped, and so are rows whose query is listed in
+    ``--exclude-queries``, which keeps evaluation queries out of the training data.
+    """
     wanted = args.max_steps * args.batch_size
+    excluded = excluded_queries(args.exclude_queries)
     columns: dict[str, list[str]] = {"anchor": [], "positive": []}
     columns.update({f"negative_{index + 1}": [] for index in range(args.negatives if args.negative_column else 0)})
 
@@ -176,6 +203,8 @@ def training_rows(rows: Iterable[Mapping[str, Any]], args: argparse.Namespace) -
         positive = first_texts(row.get(args.positive_column), 1)
         negatives = first_texts(row.get(args.negative_column), args.negatives) if args.negative_column else []
         if not query or not positive or len(negatives) < len(columns) - 2:
+            continue
+        if excluded and normalise_query(query[0]) in excluded:
             continue
         columns["anchor"].append(query[0])
         columns["positive"].append(positive[0])
@@ -212,6 +241,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "mini_batch_size": args.mini_batch_size,
         "learning_rate": args.learning_rate,
         "regularizer_weight": args.regularizer_weight,
+        "loss_scale": args.loss_scale,
         "bf16": args.bf16,
         "seed": args.seed,
     }
@@ -235,12 +265,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if args.mini_batch_size:
         loss: SpladeLoss = CachedSpladeLoss(
             model,
-            SparseMultipleNegativesRankingLoss(model),
+            SparseMultipleNegativesRankingLoss(model, scale=args.loss_scale),
             **weights,
             mini_batch_size=args.mini_batch_size,
         )
     else:
-        loss = SpladeLoss(model, SparseMultipleNegativesRankingLoss(model), **weights)
+        loss = SpladeLoss(model, SparseMultipleNegativesRankingLoss(model, scale=args.loss_scale), **weights)
     trainer = SparseEncoderTrainer(
         model=model,
         args=SparseEncoderTrainingArguments(

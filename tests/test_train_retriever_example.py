@@ -152,3 +152,19 @@ def test_a_trainable_sae_head_changes_its_encoder(example, tiny_model_dir, data,
     trained = SparseEncoder(str(tmp_path / "out" / "model"), device="cpu", trust_remote_code=True)
     assert result["head_config"]["trainable"] is True
     assert not torch.equal(trained[1].encoder_weight.detach(), load_sae(sae_dir).encoder_weight)
+
+
+def test_listed_queries_are_kept_out_of_the_training_rows(example, tiny_mlm_dir, data, tmp_path):
+    rows = [json.loads(line) for line in data[0].read_text(encoding="utf-8").splitlines()]
+    listed = tmp_path / "evaluation-queries.txt"
+    listed.write_text(f"  {rows[0]['anc']}\n\n{rows[3]['anc']}\nnot a training query\n", encoding="utf-8")
+    args = arguments(example, "mlm", tiny_mlm_dir, data, tmp_path / "out", "--exclude-queries", str(listed))
+
+    kept = example.training_rows(rows, args)
+    everything = example.training_rows(rows, arguments(example, "mlm", tiny_mlm_dir, data, tmp_path / "out"))
+
+    dropped = {rows[0]["anc"], rows[3]["anc"]}
+    assert not dropped & set(kept["anchor"]) and dropped <= set(everything["anchor"])
+    assert kept["anchor"] == [row["anc"] for row in rows if row["anc"] not in dropped][: len(kept)]
+    assert len(kept) == len(everything)  # later rows fill the places of the dropped ones
+    assert example.normalise_query(" ＡＢＣ　") == "ABC"
